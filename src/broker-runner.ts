@@ -1,7 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
-import { hashData, signData, verifyData, publicKeyFromPrivate } from "./crypto";
+import { hashData, signData, verifyData, publicKeyFromPrivate, decryptFromServer } from "./crypto";
 import { runMatch } from "./matchmaking/runner";
 
 const API_URL = (process.env.API_URL || "https://chess-agents-api-production.up.railway.app").replace(/\/$/, "");
@@ -63,6 +63,14 @@ async function processJob(job: any): Promise<void> {
     return;
   }
 
+  // Decrypt engine code if the server used per-arbiter RSA encryption
+  let challengerCode = job.challenger.code as string;
+  let defenderCode = job.defender.code as string;
+  if (job.encrypted) {
+    challengerCode = decryptFromServer(challengerCode, WORKER_PRIVATE_KEY);
+    defenderCode = decryptFromServer(defenderCode, WORKER_PRIVATE_KEY);
+  }
+
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "arbiter-match-"));
   const challengerExt = job.challenger.language === "py" ? ".py" : ".js";
   const defenderExt = job.defender.language === "py" ? ".py" : ".js";
@@ -70,8 +78,8 @@ async function processJob(job: any): Promise<void> {
   const pathB = path.join(tempDir, `agent_b${defenderExt}`);
 
   try {
-    await fs.writeFile(pathA, job.challenger.code);
-    await fs.writeFile(pathB, job.defender.code);
+    await fs.writeFile(pathA, challengerCode);
+    await fs.writeFile(pathB, defenderCode);
 
     const result = await runMatch(
       { path: pathA, language: job.challenger.language, name: job.challenger.name },

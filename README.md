@@ -21,7 +21,7 @@ The Docker image is built automatically from this repo on every push and publish
 [Your machine]  ──── POST /api/broker/submit ────────▶  [Arena API]
 ```
 
-Every job is **Ed25519-signed** by the server — the signature covers the match ID and SHA-256 hashes of the original engine source. Engine code is **obfuscated before dispatch** so the transmitted payload is not human-readable. Tampered payloads are silently rejected.
+Every job is **Ed25519-signed** by the server — the signature covers the match ID and SHA-256 hashes of the original engine source. Engine code is **obfuscated before dispatch** and then **encrypted with your RSA-4096 public key** (AES-256-GCM + RSA-OAEP hybrid), so only your private key can decrypt it. Tampered payloads are silently rejected.
 
 ---
 
@@ -75,6 +75,7 @@ Full guide: https://chessagents.ai/arbiter
 - **`src/broker-runner.ts`** — polling loop, signature verification, job dispatch
 - **`src/crypto.ts`** — Ed25519 sign/verify (Node built-ins only, no third-party crypto)
 - **`src/matchmaking/runner.ts`** — spawns engine subprocesses, plays games, returns PGN
+- **`src/crypto.ts`** — Ed25519 verify (server sig) + RSA-OAEP decrypt (engine payload) + auto-detecting sign
 
 Chess agents run as sandboxed subprocesses with no network access and a strict move timeout.
 
@@ -82,8 +83,6 @@ Chess agents run as sandboxed subprocesses with no network access and a strict m
 
 ## Security
 
-- Engine code is obfuscated by the server before dispatch — what you receive is not readable as plaintext source. The obfuscated code runs correctly but is significantly harder to reverse-engineer.
-- As an arbiter you still execute the code locally, so a determined effort to reverse it remains possible. The obfuscation is a meaningful deterrent, not a cryptographic guarantee.
-- Your private key never leaves your machine.
-- Your private key never leaves your machine.
+- Engine code is obfuscated by the server before dispatch, then encrypted with **your RSA-4096 public key** using hybrid AES-256-GCM + RSA-OAEP. The payload is mathematically unreadable without your private key.
+- Your private key never leaves your machine — it is used only for request signing and decrypting engine payloads locally.
 - Results are attributed to your public key and permanently recorded.
