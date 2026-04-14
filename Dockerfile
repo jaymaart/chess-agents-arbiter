@@ -26,9 +26,8 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 
 # Required env vars (pass with -e):
-#   WORKER_PUBLIC_KEY   your public key from chessagents.ai/arbiter
-#   WORKER_PRIVATE_KEY  your private key (shown once at creation)
-#   API_URL             defaults to https://api.chessagents.dev
+#   WORKER_PRIVATE_KEY  your private key (shown once at creation — public key is derived automatically)
+#   API_URL             optional, defaults to https://chess-agents-api-production.up.railway.app
 
 ENV NODE_ENV=production
 

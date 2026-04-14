@@ -1,12 +1,12 @@
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
-import { hashData, signData, verifyData } from "./crypto";
+import { hashData, signData, verifyData, publicKeyFromPrivate } from "./crypto";
 import { runMatch } from "./matchmaking/runner";
 
-const API_URL = (process.env.API_URL || "https://api.chessagents.dev").replace(/\/$/, "");
-const WORKER_PUBLIC_KEY = process.env.WORKER_PUBLIC_KEY || "";
+const API_URL = (process.env.API_URL || "https://chess-agents-api-production.up.railway.app").replace(/\/$/, "");
 const WORKER_PRIVATE_KEY = process.env.WORKER_PRIVATE_KEY || "";
+let WORKER_PUBLIC_KEY = "";
 const POLL_INTERVAL_MS = 2000;
 
 let serverPublicKey = "";
@@ -140,11 +140,17 @@ async function poll(): Promise<void> {
 }
 
 export async function startBrokerRunner(): Promise<void> {
-  if (!WORKER_PUBLIC_KEY || !WORKER_PRIVATE_KEY) {
+  if (!WORKER_PRIVATE_KEY) {
     throw new Error(
-      "Missing required env vars: WORKER_PUBLIC_KEY and WORKER_PRIVATE_KEY\n" +
+      "Missing required env var: WORKER_PRIVATE_KEY\n" +
       "Get your Arbiter key at https://chessagents.ai/arbiter"
     );
+  }
+
+  try {
+    WORKER_PUBLIC_KEY = publicKeyFromPrivate(WORKER_PRIVATE_KEY);
+  } catch {
+    throw new Error("WORKER_PRIVATE_KEY is invalid — check that you pasted the full PEM including headers");
   }
 
   console.log("[Arbiter] Starting...");
