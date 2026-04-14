@@ -19,14 +19,17 @@ async function fetchServerPublicKey(): Promise<void> {
   console.log("[Arbiter] Server public key loaded.");
 }
 
-function buildSigningString(endpoint: "next-jobs" | "submit", fields: Record<string, any>): string {
+function buildSigningString(endpoint: "next-jobs" | "submit" | "report-crash", fields: Record<string, any>): string {
   if (endpoint === "next-jobs") return `next-jobs:${fields.count}`;
   if (endpoint === "submit") return `submit:${fields.jobId}:${fields.matchId}`;
+  if (endpoint === "report-crash") return `report-crash:${fields.jobId}:${fields.matchId}`;
   return "";
 }
 
 async function signedPost(endpoint: string, body: object): Promise<Response> {
-  const endpointKey = endpoint.includes("next-jobs") ? "next-jobs" : "submit";
+  const endpointKey = endpoint.includes("next-jobs") ? "next-jobs"
+    : endpoint.includes("report-crash") ? "report-crash"
+    : "submit";
   const signingString = buildSigningString(endpointKey as any, body);
   const signature = signData(signingString, WORKER_PRIVATE_KEY);
 
@@ -87,6 +90,29 @@ async function processJob(job: any): Promise<void> {
       { games: job.gamesPlanned }
     );
 
+    // Reject matches where any game ended due to a real crash — do not submit for rating.
+    // Denylist known-good terminations; crash strings are inconsistent across engines.
+    const CLEAN_TERMS = ["checkmate", "stalemate", "threefold", "insufficient", "50-move", "max plies", "draw", "normal", "adjudication", "timeout"];
+    const crashedGame = result.games.find(g => {
+      const termination = g.termination?.toLowerCase();
+      return !termination || !CLEAN_TERMS.some(t => termination.includes(t));
+    });
+    if (crashedGame) {
+      const crashReason = `Crash-terminated game (round ${crashedGame.round}): "${crashedGame.termination}"`;
+      console.warn(`[Arbiter] Match ${job.matchId} has crashed game (round ${crashedGame.round}: "${crashedGame.termination}"). Reporting — no ratings applied.`);
+      const crashRes = await signedPost("/api/broker/report-crash", {
+        jobId: job.jobId,
+        matchId: job.matchId,
+        reason: crashReason,
+        pgn: result.pgn,
+      });
+      if (!crashRes.ok) {
+        const err = await crashRes.json().catch(() => ({})) as any;
+        console.error(`[Arbiter] Failed to report crash for ${job.matchId}: ${err.error || crashRes.status}`);
+      }
+      return;
+    }
+
     let challengerWins = 0, defenderWins = 0, draws = 0;
     for (const g of result.games) {
       const isChallengerWhite = g.round % 2 !== 0;
@@ -109,7 +135,8 @@ async function processJob(job: any): Promise<void> {
 
     if (!submitRes.ok) {
       const err = await submitRes.json().catch(() => ({})) as any;
-      console.error(`[Arbiter] Submit failed for ${job.matchId}: ${err.error || submitRes.status}`);
+      const detail = err.details ? ` — ${err.details}` : "";
+      console.error(`[Arbiter] Submit failed for ${job.matchId}: ${err.error || submitRes.status}${detail}`);
     } else {
       console.log(`[Arbiter] Match ${job.matchId} complete. Score: ${challengerScore}-${defenderScore}`);
     }
