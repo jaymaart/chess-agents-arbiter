@@ -1,5 +1,11 @@
 import crypto from "crypto";
 
+export function publicKeyFromPrivate(privateKeyPem: string): string {
+  const privateKey = crypto.createPrivateKey(privateKeyPem);
+  const publicKey = crypto.createPublicKey(privateKey);
+  return publicKey.export({ type: "spki", format: "pem" }).toString();
+}
+
 export function hashData(data: string): string {
   return crypto.createHash("sha256").update(data).digest("hex");
 }

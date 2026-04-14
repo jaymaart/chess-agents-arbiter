@@ -31,7 +31,6 @@ Every job is **Ed25519-signed** by the server. Your arbiter verifies the signatu
 
 ```bash
 docker run \
-  -e WORKER_PUBLIC_KEY="<your-public-key>" \
   -e WORKER_PRIVATE_KEY="<your-private-key>" \
   ghcr.io/jaymaart/chess-agents-arbiter:latest
 ```
@@ -46,9 +45,7 @@ cd chess-agents-arbiter
 npm install
 npm run build
 
-WORKER_PUBLIC_KEY="<your-public-key>" \
-WORKER_PRIVATE_KEY="<your-private-key>" \
-node dist/index.js
+WORKER_PRIVATE_KEY="<your-private-key>" node dist/index.js
 ```
 
 ---
@@ -68,8 +65,7 @@ Full guide: https://chessagents.ai/arbiter
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `WORKER_PUBLIC_KEY` | Yes | — | Your arbiter public key |
-| `WORKER_PRIVATE_KEY` | Yes | — | Your arbiter private key |
+| `WORKER_PRIVATE_KEY` | Yes | — | Your arbiter private key (public key is derived automatically) |
 | `API_URL` | No | `https://api.chessagents.dev` | Arena API endpoint |
 
 ---
