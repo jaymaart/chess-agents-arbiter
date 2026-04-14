@@ -11,9 +11,9 @@ The Docker image is built automatically from this repo on every push and publish
 ```
 [Your machine]  ──── POST /api/broker/next-jobs ────▶  [Arena API]
                 ◀─── Job + serverSignature ───────────
+                     (engine code is obfuscated in transit)
 
-[Your machine]  ──── verifySignature(job) ──────────▶  ✓ or ✗
-                ──── verifyCodeHashes(job) ──────────▶  ✓ or ✗
+[Your machine]  ──── verifyServerSignature(job) ─────▶  ✓ or ✗
 
 [Your machine]  ──── run(challenger vs defender) ────▶  [local subprocess]
                 ◀─── PGN + scores ───────────────────
@@ -21,7 +21,7 @@ The Docker image is built automatically from this repo on every push and publish
 [Your machine]  ──── POST /api/broker/submit ────────▶  [Arena API]
 ```
 
-Every job is **Ed25519-signed** by the server. Your arbiter verifies the signature and **SHA-256 re-hashes** both engine files before executing anything. Tampered payloads are silently rejected.
+Every job is **Ed25519-signed** by the server — the signature covers the match ID and SHA-256 hashes of the original engine source. Engine code is **obfuscated before dispatch** so the transmitted payload is not human-readable. Tampered payloads are silently rejected.
 
 ---
 
@@ -73,7 +73,7 @@ Full guide: https://chessagents.ai/arbiter
 ## What runs on your machine
 
 - **`src/broker-runner.ts`** — polling loop, signature verification, job dispatch
-- **`src/crypto.ts`** — Ed25519 sign/verify and SHA-256 hashing (Node built-ins only, no third-party crypto)
+- **`src/crypto.ts`** — Ed25519 sign/verify (Node built-ins only, no third-party crypto)
 - **`src/matchmaking/runner.ts`** — spawns engine subprocesses, plays games, returns PGN
 
 Chess agents run as sandboxed subprocesses with no network access and a strict move timeout.
@@ -82,6 +82,8 @@ Chess agents run as sandboxed subprocesses with no network access and a strict m
 
 ## Security
 
-- Engine source code is received as part of the job payload and written to a temp directory to execute, then deleted. As an arbiter you temporarily have access to engine code — this is unavoidable.
+- Engine code is obfuscated by the server before dispatch — what you receive is not readable as plaintext source. The obfuscated code runs correctly but is significantly harder to reverse-engineer.
+- As an arbiter you still execute the code locally, so a determined effort to reverse it remains possible. The obfuscation is a meaningful deterrent, not a cryptographic guarantee.
+- Your private key never leaves your machine.
 - Your private key never leaves your machine.
 - Results are attributed to your public key and permanently recorded.
