@@ -72,8 +72,8 @@ async function processJob(job: any): Promise<void> {
   }
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "arbiter-match-"));
-  const challengerExt = job.challenger.language === "py" ? ".py" : ".js";
-  const defenderExt = job.defender.language === "py" ? ".py" : ".js";
+  const challengerExt = job.challenger.language === "py" ? ".py" : ".mjs";
+  const defenderExt = job.defender.language === "py" ? ".py" : ".mjs";
   const pathA = path.join(tempDir, `agent_a${challengerExt}`);
   const pathB = path.join(tempDir, `agent_b${defenderExt}`);
 
