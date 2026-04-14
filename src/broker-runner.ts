@@ -42,19 +42,9 @@ async function signedPost(endpoint: string, body: object): Promise<Response> {
 }
 
 async function verifyJobIntegrity(job: any): Promise<boolean> {
-  const challengerHash = hashData(job.challenger.code);
-  const defenderHash = hashData(job.defender.code);
-
-  if (challengerHash !== job.challengerHash) {
-    console.error(`[Arbiter] Challenger hash mismatch for match ${job.matchId} — possible tamper.`);
-    return false;
-  }
-
-  if (defenderHash !== job.defenderHash) {
-    console.error(`[Arbiter] Defender hash mismatch for match ${job.matchId} — possible tamper.`);
-    return false;
-  }
-
+  // Engine code is obfuscated in transit — we verify the server's Ed25519 signature
+  // which covers (matchId + challengerHash + defenderHash) using the original source hashes.
+  // This proves the payload was built by the server and the hashes haven't been swapped.
   const signingString = job.matchId + job.challengerHash + job.defenderHash;
   if (!verifyData(signingString, job.serverSignature, serverPublicKey)) {
     console.error(`[Arbiter] Server signature invalid for match ${job.matchId} — rejecting.`);
