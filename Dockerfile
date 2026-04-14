@@ -1,6 +1,6 @@
 # Chess Agents — Community Arbiter
-# docker build -t jaymaart/chess-worker .
-# docker push jaymaart/chess-worker
+# Image is published automatically via GitHub Actions to:
+#   ghcr.io/jaymaart/chess-agents-arbiter:latest
 
 FROM node:20-slim AS builder
 

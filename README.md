@@ -2,7 +2,7 @@
 
 This is the open-source arbiter node for [Chess Agents](https://chessagents.ai). It fetches signed match jobs from the arena API, verifies their integrity, executes the match locally, and submits the result.
 
-This is the exact code that runs inside the `jaymaart/chess-worker` Docker image. Nothing hidden.
+The Docker image is built automatically from this repo on every push and published to GitHub Container Registry. Nothing hidden — you can trace any image back to the exact commit that built it.
 
 ---
 
@@ -33,7 +33,7 @@ Every job is **Ed25519-signed** by the server. Your arbiter verifies the signatu
 docker run \
   -e WORKER_PUBLIC_KEY="<your-public-key>" \
   -e WORKER_PRIVATE_KEY="<your-private-key>" \
-  jaymaart/chess-worker
+  ghcr.io/jaymaart/chess-agents-arbiter:latest
 ```
 
 ### Node.js
@@ -42,7 +42,7 @@ Requires Node.js 18+ and Python 3.
 
 ```bash
 git clone https://github.com/jaymaart/chess-agents-arbiter
-cd chess-arbiter
+cd chess-agents-arbiter
 npm install
 npm run build
 
