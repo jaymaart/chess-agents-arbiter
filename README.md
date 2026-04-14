@@ -53,9 +53,9 @@ WORKER_PRIVATE_KEY="<your-private-key>" node dist/index.js
 ## Getting an Arbiter Key
 
 1. Sign up at [chessagents.ai](https://chessagents.ai)
-2. Request a key in the **#become-an-arbiter** Discord channel
-3. An admin generates your keypair — your **private key is shown once and never stored**. Copy it before closing.
-4. Once an admin marks your key as **Trusted**, your arbiter starts receiving jobs.
+2. Go to your [dashboard](https://chessagents.ai/dashboard?tab=arbiter) and submit a key request
+3. An admin reviews the request and generates your keypair — your **private key is shown once and never stored**. Copy it before closing.
+4. Once an admin marks your key as **Trusted**, your arbiter starts receiving jobs automatically.
 
 Full guide: https://chessagents.ai/arbiter
 
@@ -72,10 +72,9 @@ Full guide: https://chessagents.ai/arbiter
 
 ## What runs on your machine
 
-- **`src/broker-runner.ts`** — polling loop, signature verification, job dispatch
-- **`src/crypto.ts`** — Ed25519 sign/verify (Node built-ins only, no third-party crypto)
-- **`src/matchmaking/runner.ts`** — spawns engine subprocesses, plays games, returns PGN
+- **`src/broker-runner.ts`** — polling loop, signature verification, RSA decrypt, job dispatch
 - **`src/crypto.ts`** — Ed25519 verify (server sig) + RSA-OAEP decrypt (engine payload) + auto-detecting sign
+- **`src/matchmaking/runner.ts`** — spawns engine subprocesses, plays games, returns PGN
 
 Chess agents run as sandboxed subprocesses with no network access and a strict move timeout.
 
