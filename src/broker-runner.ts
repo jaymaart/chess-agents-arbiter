@@ -7,7 +7,33 @@ import { runMatch } from "./matchmaking/runner";
 const API_URL = (process.env.API_URL || "https://chess-agents-api-production.up.railway.app").replace(/\/$/, "");
 const WORKER_PRIVATE_KEY = process.env.WORKER_PRIVATE_KEY || "";
 let WORKER_PUBLIC_KEY = "";
-const POLL_INTERVAL_MS = 2000;
+
+const POLL_INTERVAL_MS = Math.max(500, parseInt(process.env.POLL_INTERVAL_MS || "2000", 10));
+const POLL_COUNT = Math.max(1, Math.min(50, parseInt(process.env.POLL_COUNT || "1", 10)));
+
+// Soft rate limit: RATE_LIMIT="100/10s" means at most 100 requests per 10-second window.
+// If exceeded, the poll is skipped (not errored) until the window clears.
+let rateLimitMax = Infinity;
+let rateLimitWindowMs = 10_000;
+const pollTimestamps: number[] = [];
+
+if (process.env.RATE_LIMIT) {
+  const match = process.env.RATE_LIMIT.match(/^(\d+)\/(\d+)(s|m)?$/);
+  if (!match) throw new Error(`Invalid RATE_LIMIT format — expected "N/Xs" or "N/Xm" (e.g. "100/10s")`);
+  rateLimitMax = parseInt(match[1], 10);
+  const unit = match[3] ?? "s";
+  rateLimitWindowMs = parseInt(match[2], 10) * (unit === "m" ? 60_000 : 1_000);
+}
+
+function withinRateLimit(): boolean {
+  const now = Date.now();
+  const cutoff = now - rateLimitWindowMs;
+  // Evict timestamps outside the window
+  while (pollTimestamps.length && pollTimestamps[0] < cutoff) pollTimestamps.shift();
+  if (pollTimestamps.length >= rateLimitMax) return false;
+  pollTimestamps.push(now);
+  return true;
+}
 
 let serverPublicKey = "";
 
@@ -146,19 +172,23 @@ async function processJob(job: any): Promise<void> {
 }
 
 async function poll(): Promise<void> {
-  try {
-    const res = await signedPost("/api/broker/next-jobs", { count: 1 });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({})) as any;
-      console.error(`[Arbiter] Failed to fetch jobs: ${err.error || res.status}`);
-    } else {
-      const jobs = await res.json() as any[];
-      for (const job of jobs) {
-        await processJob(job);
+  if (!withinRateLimit()) {
+    console.warn(`[Arbiter] Rate limit reached (${rateLimitMax} reqs/${rateLimitWindowMs / 1000}s) — skipping poll.`);
+  } else {
+    try {
+      const res = await signedPost("/api/broker/next-jobs", { count: POLL_COUNT });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as any;
+        console.error(`[Arbiter] Failed to fetch jobs: ${err.error || res.status}`);
+      } else {
+        const jobs = await res.json() as any[];
+        for (const job of jobs) {
+          await processJob(job);
+        }
       }
+    } catch (err) {
+      console.error("[Arbiter] Poll error:", err);
     }
-  } catch (err) {
-    console.error("[Arbiter] Poll error:", err);
   }
 
   setTimeout(poll, POLL_INTERVAL_MS);
@@ -181,6 +211,8 @@ export async function startBrokerRunner(): Promise<void> {
   console.log("[Arbiter] Starting...");
   console.log(`[Arbiter] API: ${API_URL}`);
   console.log(`[Arbiter] Identity: ${WORKER_PUBLIC_KEY.slice(27, 60)}...`);
+  console.log(`[Arbiter] Poll interval: ${POLL_INTERVAL_MS}ms | Jobs per poll: ${POLL_COUNT}` +
+    (rateLimitMax < Infinity ? ` | Rate limit: ${rateLimitMax}/${rateLimitWindowMs / 1000}s` : ""));
 
   await fetchServerPublicKey();
   console.log("[Arbiter] Ready. Polling for matches.");
