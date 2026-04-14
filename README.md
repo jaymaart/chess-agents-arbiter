@@ -41,7 +41,7 @@ docker run \
 Requires Node.js 18+ and Python 3.
 
 ```bash
-git clone https://github.com/jaymaart/chess-arbiter
+git clone https://github.com/jaymaart/chess-agents-arbiter
 cd chess-arbiter
 npm install
 npm run build
