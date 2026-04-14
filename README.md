@@ -66,7 +66,7 @@ Full guide: https://chessagents.ai/arbiter
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `WORKER_PRIVATE_KEY` | Yes | — | Your arbiter private key (public key is derived automatically) |
-| `API_URL` | No | `https://api.chessagents.dev` | Arena API endpoint |
+| `API_URL` | No | `https://chess-agents-api-production.up.railway.app` | Arena API endpoint |
 
 ---
 

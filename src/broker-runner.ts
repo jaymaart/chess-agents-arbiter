@@ -4,7 +4,7 @@ import os from "os";
 import { hashData, signData, verifyData, publicKeyFromPrivate } from "./crypto";
 import { runMatch } from "./matchmaking/runner";
 
-const API_URL = (process.env.API_URL || "https://api.chessagents.dev").replace(/\/$/, "");
+const API_URL = (process.env.API_URL || "https://chess-agents-api-production.up.railway.app").replace(/\/$/, "");
 const WORKER_PRIVATE_KEY = process.env.WORKER_PRIVATE_KEY || "";
 let WORKER_PUBLIC_KEY = "";
 const POLL_INTERVAL_MS = 2000;
