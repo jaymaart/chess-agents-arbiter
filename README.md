@@ -54,7 +54,7 @@ Full guide: https://chessagents.ai/arbiter
 |---|---|---|---|
 | `WORKER_PRIVATE_KEY` | Yes | — | Your arbiter private key (public key is derived automatically) |
 | `API_URL` | No | `https://chess-agents-api-production.up.railway.app` | Arena API endpoint |
-| `POLL_INTERVAL_MS` | No | `30000` | Milliseconds between polls. Minimum `500`. |
+| `POLL_INTERVAL_MS` | No | `120000` | Milliseconds between polls. Minimum `120000` (2 min). |
 | `POLL_COUNT` | No | `10` | Jobs fetched per poll (1–50). Raise if you have spare cores; each job runs in a subprocess. |
 | `RATE_LIMIT` | No | — | Cap polls per window. Format `N/Xs` or `N/Xm` (e.g. `100/10s`, `500/1m`). Exceeded polls are skipped, not errored. |
 | `MATCH_TYPES` | No | — | Comma-separated list of match types to run. Omit to run all authorized types. Example: `training` or `training,rating`. |

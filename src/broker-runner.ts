@@ -8,7 +8,7 @@ const API_URL = (process.env.API_URL || "https://chess-agents-api-production.up.
 const WORKER_PRIVATE_KEY = process.env.WORKER_PRIVATE_KEY || "";
 let WORKER_PUBLIC_KEY = "";
 
-const POLL_INTERVAL_MS = Math.max(500, parseInt(process.env.POLL_INTERVAL_MS || "30000", 10));
+const POLL_INTERVAL_MS = Math.max(120_000, parseInt(process.env.POLL_INTERVAL_MS || "120000", 10));
 const POLL_COUNT = Math.max(1, Math.min(50, parseInt(process.env.POLL_COUNT || "10", 10)));
 
 // Optional: limit to specific match types, e.g. MATCH_TYPES=training or MATCH_TYPES=training,rating
@@ -203,11 +203,20 @@ function pollRequests(): Array<Record<string, unknown>> {
   return [{ count: POLL_COUNT, matchTypes: MATCH_TYPES }];
 }
 
+let polling = false;
+
 async function poll(): Promise<void> {
-  if (!withinRateLimit()) {
-    console.warn(`[Arbiter] Rate limit reached (${rateLimitMax} reqs/${rateLimitWindowMs / 1000}s) — skipping poll.`);
-  } else {
-    try {
+  if (polling) {
+    // Previous batch still running — skip this tick and try again next interval
+    setTimeout(poll, POLL_INTERVAL_MS);
+    return;
+  }
+
+  polling = true;
+  try {
+    if (!withinRateLimit()) {
+      console.warn(`[Arbiter] Rate limit reached (${rateLimitMax} reqs/${rateLimitWindowMs / 1000}s) — skipping poll.`);
+    } else {
       for (const body of pollRequests()) {
         const res = await signedPost("/api/broker/next-jobs", body);
         if (!res.ok) {
@@ -221,9 +230,11 @@ async function poll(): Promise<void> {
         }
         if (jobs.length > 0) break; // got work — don't fall through to next type
       }
-    } catch (err) {
-      console.error("[Arbiter] Poll error:", err);
     }
+  } catch (err) {
+    console.error("[Arbiter] Poll error:", err);
+  } finally {
+    polling = false;
   }
 
   setTimeout(poll, POLL_INTERVAL_MS);
