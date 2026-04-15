@@ -1,0 +1,15 @@
+services:
+  arbiter:
+    image: chess-agents-arbiter:local
+    restart: always
+    env_file:
+      - ../chess-agents/.env.arbiter
+    environment:
+      - NODE_ENV=production
+    deploy:
+      replicas: 4
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10mb"
+        max-file: "3"

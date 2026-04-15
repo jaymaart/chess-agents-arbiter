@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y python3 python3-pip stockfish --no-inst
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
 
 # Required env vars (pass with -e):
 #   WORKER_PRIVATE_KEY  your private key (shown once at creation — public key is derived automatically)
