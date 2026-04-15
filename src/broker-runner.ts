@@ -4,6 +4,9 @@ import os from "os";
 import { hashData, signData, verifyData, publicKeyFromPrivate, decryptFromServer } from "./crypto";
 import { runMatch } from "./matchmaking/runner";
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const ARBITER_VERSION: string = require("../package.json").version;
+
 const API_URL = (process.env.API_URL || "https://chess-agents-api-production.up.railway.app").replace(/\/$/, "");
 const WORKER_PRIVATE_KEY = process.env.WORKER_PRIVATE_KEY || "";
 let WORKER_PUBLIC_KEY = "";
@@ -70,6 +73,7 @@ async function signedPost(endpoint: string, body: object): Promise<Response> {
       "Content-Type": "application/json",
       "x-worker-public-key": WORKER_PUBLIC_KEY,
       "x-worker-signature": signature,
+      "x-arbiter-version": ARBITER_VERSION,
     },
     body: JSON.stringify(body),
   });
@@ -219,6 +223,13 @@ async function poll(): Promise<void> {
     } else {
       for (const body of pollRequests()) {
         const res = await signedPost("/api/broker/next-jobs", body);
+        if (res.status === 426) {
+          const err = await res.json().catch(() => ({})) as any;
+          console.error(`\n[Arbiter] !! OUTDATED VERSION !! ${err.error}`);
+          console.error(`[Arbiter] Update at: ${err.updateUrl}`);
+          console.error(`[Arbiter] This arbiter will not receive matches until updated.\n`);
+          break;
+        }
         if (!res.ok) {
           const err = await res.json().catch(() => ({})) as any;
           console.error(`[Arbiter] Failed to fetch jobs: ${err.error || res.status}`);

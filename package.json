@@ -1,6 +1,6 @@
 {
   "name": "chess-arbiter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Community arbiter node for Chess Agents — fetches, verifies, and executes signed match jobs.",
   "main": "dist/index.js",
   "scripts": {
