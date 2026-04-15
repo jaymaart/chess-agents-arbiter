@@ -3,7 +3,12 @@ import crypto from "crypto";
 export function publicKeyFromPrivate(privateKeyPem: string): string {
   const privateKey = crypto.createPrivateKey(privateKeyPem);
   const publicKey = crypto.createPublicKey(privateKey);
-  return publicKey.export({ type: "spki", format: "pem" }).toString();
+  const pem = publicKey.export({ type: "spki", format: "pem" }).toString();
+  // Strip PEM wrapper and newlines — HTTP headers cannot contain newlines
+  return pem
+    .replace(/-----BEGIN[^-]*-----/g, "")
+    .replace(/-----END[^-]*-----/g, "")
+    .replace(/\s/g, "");
 }
 
 export function hashData(data: string): string {
