@@ -18,8 +18,9 @@ FROM node:20-slim
 
 WORKDIR /app
 
-# python3 is required at runtime to execute .py chess agents
-RUN apt-get update && apt-get install -y python3 --no-install-recommends \
+# python3 + common chess libraries required to execute .py chess agents
+RUN apt-get update && apt-get install -y python3 python3-pip stockfish --no-install-recommends \
+    && pip3 install chess stockfish --break-system-packages \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/dist ./dist
