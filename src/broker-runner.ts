@@ -2,14 +2,14 @@ import fs from "fs/promises";
 import http from "http";
 import path from "path";
 import os from "os";
-import { hashData, signData, verifyData, publicKeyFromPrivate, decryptFromServer } from "./crypto";
+import { hashData, signData, verifyData, publicKeyFromPrivate, decryptFromServer, normalizePem } from "./crypto";
 import { runMatch } from "./matchmaking/runner";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const ARBITER_VERSION: string = require("../package.json").version;
 
 const API_URL = (process.env.API_URL || "https://chess-agents-api-production.up.railway.app").replace(/\/$/, "");
-const WORKER_PRIVATE_KEY = process.env.WORKER_PRIVATE_KEY || "";
+const WORKER_PRIVATE_KEY = normalizePem(process.env.WORKER_PRIVATE_KEY || "");
 let WORKER_PUBLIC_KEY = "";
 
 const POLL_INTERVAL_MS = Math.max(120_000, parseInt(process.env.POLL_INTERVAL_MS || "120000", 10));

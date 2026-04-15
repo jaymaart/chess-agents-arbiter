@@ -1,5 +1,22 @@
 import crypto from "crypto";
 
+/**
+ * Normalizes a PEM key that may have been flattened (spaces instead of newlines)
+ * by dotenv/dotenvx when reading multiline values from .env files.
+ */
+export function normalizePem(pem: string): string {
+  pem = pem.trim();
+  if (pem.includes("\n")) return pem;
+  const header = pem.match(/-----BEGIN[^-]+-----/)?.[0] ?? "";
+  const footer = pem.match(/-----END[^-]+-----/)?.[0] ?? "";
+  const body = pem
+    .replace(/-----BEGIN[^-]+-----/, "")
+    .replace(/-----END[^-]+-----/, "")
+    .replace(/\s+/g, "");
+  const wrapped = body.match(/.{1,64}/g)?.join("\n") ?? body;
+  return `${header}\n${wrapped}\n${footer}`;
+}
+
 export function publicKeyFromPrivate(privateKeyPem: string): string {
   const privateKey = crypto.createPrivateKey(privateKeyPem);
   const publicKey = crypto.createPublicKey(privateKey);
