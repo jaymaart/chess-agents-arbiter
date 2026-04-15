@@ -211,7 +211,7 @@ async function processJob(job: any): Promise<void> {
 
     // Reject matches where any game ended due to a real crash — do not submit for rating.
     // Denylist known-good terminations; crash strings are inconsistent across engines.
-    const CLEAN_TERMS = ["checkmate", "stalemate", "threefold", "insufficient", "50-move", "max plies", "draw", "normal", "adjudication", "timeout"];
+    const CLEAN_TERMS = ["checkmate", "stalemate", "threefold", "insufficient", "50-move", "max plies", "draw", "normal", "adjudication", "timeout", "illegal move"];
     const crashedGame = result.games.find(g => {
       const termination = g.termination?.toLowerCase();
       return !termination || !CLEAN_TERMS.some(t => termination.includes(t));
