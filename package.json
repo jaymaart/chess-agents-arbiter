@@ -4,9 +4,7 @@
   "description": "Community arbiter node for Chess Agents — fetches, verifies, and executes signed match jobs.",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "npx tsx src/index.ts"
+    "build": "tsc"
   },
   "dependencies": {
     "chess.js": "^1.4.0",

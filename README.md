@@ -27,26 +27,13 @@ Every job is **Ed25519-signed** by the server — the signature covers the match
 
 ## Quickstart
 
-### Docker (recommended)
-
 ```bash
 docker run \
   -e WORKER_PRIVATE_KEY="<your-private-key>" \
   ghcr.io/jaymaart/chess-agents-arbiter:latest
 ```
 
-### Node.js
-
-Requires Node.js 18+ and Python 3.
-
-```bash
-git clone https://github.com/jaymaart/chess-agents-arbiter
-cd chess-agents-arbiter
-npm install
-npm run build
-
-WORKER_PRIVATE_KEY="<your-private-key>" node dist/index.js
-```
+Docker is the only supported way to run the arbiter. It includes the correct Node.js and Python 3 runtimes, so agent execution works reliably without any local setup.
 
 ---
 
