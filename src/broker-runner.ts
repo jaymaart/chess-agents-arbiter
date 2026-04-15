@@ -1,4 +1,5 @@
 import fs from "fs/promises";
+import http from "http";
 import path from "path";
 import os from "os";
 import { hashData, signData, verifyData, publicKeyFromPrivate, decryptFromServer } from "./crypto";
@@ -13,6 +14,11 @@ let WORKER_PUBLIC_KEY = "";
 
 const POLL_INTERVAL_MS = Math.max(120_000, parseInt(process.env.POLL_INTERVAL_MS || "120000", 10));
 const POLL_COUNT = Math.max(1, Math.min(50, parseInt(process.env.POLL_COUNT || "10", 10)));
+
+// Auto-update: disabled by default. Set AUTO_UPDATE=true to enable.
+// Requires /var/run/docker.sock mounted (-v /var/run/docker.sock:/var/run/docker.sock).
+const AUTO_UPDATE = process.env.AUTO_UPDATE === "true";
+const DOCKER_IMAGE = process.env.DOCKER_IMAGE || "ghcr.io/jaymaart/chess-agents-arbiter:latest";
 
 // Optional: limit to specific match types, e.g. MATCH_TYPES=training or MATCH_TYPES=training,rating
 const MATCH_TYPES: string[] | null = process.env.MATCH_TYPES
@@ -51,6 +57,75 @@ async function fetchServerPublicKey(): Promise<void> {
   const data = await res.json() as { publicKey: string };
   serverPublicKey = data.publicKey;
   console.log("[Arbiter] Server public key loaded.");
+}
+
+function isNewerVersion(current: string, candidate: string): boolean {
+  const [cMaj, cMin, cPatch] = current.split(".").map(Number);
+  const [nMaj, nMin, nPatch] = candidate.split(".").map(Number);
+  if (nMaj !== cMaj) return nMaj > cMaj;
+  if (nMin !== cMin) return nMin > cMin;
+  return nPatch > cPatch;
+}
+
+// Pulls the latest Docker image via the Docker socket, then exits so Docker's
+// restart policy restarts the container on the new image.
+async function pullAndRestart(): Promise<void> {
+  const lastColon = DOCKER_IMAGE.lastIndexOf(":");
+  const image = lastColon > DOCKER_IMAGE.lastIndexOf("/") ? DOCKER_IMAGE.slice(0, lastColon) : DOCKER_IMAGE;
+  const tag = lastColon > DOCKER_IMAGE.lastIndexOf("/") ? DOCKER_IMAGE.slice(lastColon + 1) : "latest";
+
+  console.log(`[Arbiter] Pulling ${DOCKER_IMAGE}...`);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request(
+        {
+          socketPath: "/var/run/docker.sock",
+          path: `/v1.41/images/create?fromImage=${encodeURIComponent(image)}&tag=${encodeURIComponent(tag)}`,
+          method: "POST",
+          headers: { "Content-Length": "0" },
+        },
+        (res) => {
+          res.resume();
+          res.on("end", () => {
+            if (res.statusCode && res.statusCode < 400) resolve();
+            else reject(new Error(`Docker API returned ${res.statusCode}`));
+          });
+        }
+      );
+      req.on("error", reject);
+      req.end();
+    });
+    console.log("[Arbiter] Pull complete. Restarting on new image...");
+    process.exit(0);
+  } catch (err: any) {
+    console.warn(`[Arbiter] Auto-update pull failed: ${err.message}`);
+    console.warn(`[Arbiter] Is /var/run/docker.sock mounted? Add: -v /var/run/docker.sock:/var/run/docker.sock`);
+    console.warn(`[Arbiter] Manual update: docker pull ${DOCKER_IMAGE} && docker restart <container>`);
+  }
+}
+
+// Checks GitHub releases for a newer version. If AUTO_UPDATE is enabled and a
+// newer release is found, pulls the new image and restarts.
+async function checkForUpdate(): Promise<void> {
+  try {
+    const res = await fetch(
+      "https://api.github.com/repos/jaymaart/chess-agents-arbiter/releases/latest",
+      { headers: { "User-Agent": `chess-agents-arbiter/${ARBITER_VERSION}` } }
+    );
+    if (!res.ok) return;
+    const release = await res.json() as { tag_name: string };
+    const latest = release.tag_name.replace(/^v/, "");
+    if (!isNewerVersion(ARBITER_VERSION, latest)) return;
+
+    if (AUTO_UPDATE) {
+      console.log(`[Arbiter] Update available: v${latest} (current: v${ARBITER_VERSION}). Auto-updating...`);
+      await pullAndRestart();
+    } else {
+      console.log(`[Arbiter] Update available: v${latest} (current: v${ARBITER_VERSION}). Set AUTO_UPDATE=true to update automatically.`);
+    }
+  } catch {
+    // Network or parse error — silently skip, don't crash the arbiter
+  }
 }
 
 function buildSigningString(endpoint: "next-jobs" | "submit" | "report-crash", fields: Record<string, any>): string {
@@ -227,7 +302,11 @@ async function poll(): Promise<void> {
           const err = await res.json().catch(() => ({})) as any;
           console.error(`\n[Arbiter] !! OUTDATED VERSION !! ${err.error}`);
           console.error(`[Arbiter] Update at: ${err.updateUrl}`);
-          console.error(`[Arbiter] This arbiter will not receive matches until updated.\n`);
+          if (AUTO_UPDATE) {
+            await pullAndRestart();
+          } else {
+            console.error(`[Arbiter] Set AUTO_UPDATE=true to update automatically.\n`);
+          }
           break;
         }
         if (!res.ok) {
@@ -270,9 +349,11 @@ export async function startBrokerRunner(): Promise<void> {
   console.log(`[Arbiter] Identity: ${WORKER_PUBLIC_KEY.slice(27, 60)}...`);
   console.log(`[Arbiter] Poll interval: ${POLL_INTERVAL_MS}ms | Jobs per poll: ${POLL_COUNT}` +
     (rateLimitMax < Infinity ? ` | Rate limit: ${rateLimitMax}/${rateLimitWindowMs / 1000}s` : "") +
-    (MATCH_TYPES ? ` | Match types: ${MATCH_TYPES.join(", ")}` : ""));
+    (MATCH_TYPES ? ` | Match types: ${MATCH_TYPES.join(", ")}` : "") +
+    (AUTO_UPDATE ? ` | Auto-update: enabled` : ""));
 
   await fetchServerPublicKey();
+  await checkForUpdate();
   console.log("[Arbiter] Ready. Polling for matches.");
   poll();
 }
