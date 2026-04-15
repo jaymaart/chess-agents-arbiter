@@ -185,22 +185,41 @@ async function processJob(job: any): Promise<void> {
   }
 }
 
+// Build the ordered list of matchTypes requests for one poll cycle.
+// When training is included it gets its own request first; only if that
+// returns nothing do we fall back to the remaining types.
+function pollRequests(): Array<Record<string, unknown>> {
+  if (!MATCH_TYPES) return [{ count: POLL_COUNT }];
+
+  if (MATCH_TYPES.includes("training")) {
+    const others = MATCH_TYPES.filter(t => t !== "training");
+    const reqs: Array<Record<string, unknown>> = [
+      { count: POLL_COUNT, matchTypes: ["training"] },
+    ];
+    if (others.length > 0) reqs.push({ count: POLL_COUNT, matchTypes: others });
+    return reqs;
+  }
+
+  return [{ count: POLL_COUNT, matchTypes: MATCH_TYPES }];
+}
+
 async function poll(): Promise<void> {
   if (!withinRateLimit()) {
     console.warn(`[Arbiter] Rate limit reached (${rateLimitMax} reqs/${rateLimitWindowMs / 1000}s) — skipping poll.`);
   } else {
     try {
-      const body: Record<string, unknown> = { count: POLL_COUNT };
-      if (MATCH_TYPES) body.matchTypes = MATCH_TYPES;
-      const res = await signedPost("/api/broker/next-jobs", body);
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({})) as any;
-        console.error(`[Arbiter] Failed to fetch jobs: ${err.error || res.status}`);
-      } else {
+      for (const body of pollRequests()) {
+        const res = await signedPost("/api/broker/next-jobs", body);
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({})) as any;
+          console.error(`[Arbiter] Failed to fetch jobs: ${err.error || res.status}`);
+          break;
+        }
         const jobs = await res.json() as any[];
         for (const job of jobs) {
           await processJob(job);
         }
+        if (jobs.length > 0) break; // got work — don't fall through to next type
       }
     } catch (err) {
       console.error("[Arbiter] Poll error:", err);
