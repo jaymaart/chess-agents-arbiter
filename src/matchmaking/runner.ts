@@ -277,5 +277,8 @@ function buildPgn(
     `[Result "${result}"]`,
     `[Termination "${termination}"]`,
   ];
-  return headers.join("\n") + "\n\n" + chess.pgn() + " " + result;
+  // chess.pgn() in chess.js v1 includes its own header block (e.g. [Result "1-0"]).
+  // Strip those so the server's game-count check doesn't see duplicate [Result] tags.
+  const moveText = chess.pgn().split("\n").filter(l => !l.startsWith("[")).join("\n").trim();
+  return headers.join("\n") + "\n\n" + moveText + " " + result;
 }
