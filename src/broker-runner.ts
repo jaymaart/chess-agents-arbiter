@@ -101,8 +101,11 @@ async function processJob(job: any): Promise<void> {
   }
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "arbiter-match-"));
-  const challengerExt = job.challenger.language === "py" ? ".py" : ".mjs";
-  const defenderExt = job.defender.language === "py" ? ".py" : ".mjs";
+  // .cjs forces CommonJS loader — obfuscated JS uses require()/IIFE patterns
+  // that fail under ESM (.mjs). .cjs is safe regardless of whether a parent
+  // package.json declares "type": "module".
+  const challengerExt = job.challenger.language === "py" ? ".py" : ".cjs";
+  const defenderExt = job.defender.language === "py" ? ".py" : ".cjs";
   const pathA = path.join(tempDir, `agent_a${challengerExt}`);
   const pathB = path.join(tempDir, `agent_b${defenderExt}`);
 
