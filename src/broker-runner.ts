@@ -83,6 +83,15 @@ async function verifyJobIntegrity(job: any): Promise<boolean> {
   return true;
 }
 
+// Detect whether JS code uses ES module syntax so we can assign the right
+// extension. .mjs forces ESM, .cjs forces CommonJS — Node respects both
+// regardless of any parent package.json "type" field.
+function jsExt(code: string): ".mjs" | ".cjs" {
+  return /\bimport\s*[\(\{"'`]|\bexport\s+(default\b|\{|const\b|function\b|class\b|async\b)/.test(code)
+    ? ".mjs"
+    : ".cjs";
+}
+
 async function processJob(job: any): Promise<void> {
   console.log(`[Arbiter] Running match ${job.matchId}...`);
 
@@ -101,11 +110,8 @@ async function processJob(job: any): Promise<void> {
   }
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "arbiter-match-"));
-  // .cjs forces CommonJS loader — obfuscated JS uses require()/IIFE patterns
-  // that fail under ESM (.mjs). .cjs is safe regardless of whether a parent
-  // package.json declares "type": "module".
-  const challengerExt = job.challenger.language === "py" ? ".py" : ".cjs";
-  const defenderExt = job.defender.language === "py" ? ".py" : ".cjs";
+  const challengerExt = job.challenger.language === "py" ? ".py" : jsExt(challengerCode);
+  const defenderExt = job.defender.language === "py" ? ".py" : jsExt(defenderCode);
   const pathA = path.join(tempDir, `agent_a${challengerExt}`);
   const pathB = path.join(tempDir, `agent_b${defenderExt}`);
 
