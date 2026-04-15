@@ -9,14 +9,14 @@ The Docker image is built automatically from this repo on every push and publish
 ## How it works
 
 ```
-[Your machine]  ──── POST /api/broker/next-jobs ────▶  [Arena API]
-                ◀─── Job + serverSignature ───────────
+[Your machine]  ──── POST /api/broker/next-jobs ──────▶  [Arena API]
+                ◀─── Job + serverSignature ──────────
                      (engine code is obfuscated in transit)
 
 [Your machine]  ──── verifyServerSignature(job) ─────▶  ✓ or ✗
 
 [Your machine]  ──── run(challenger vs defender) ────▶  [local subprocess]
-                ◀─── PGN + scores ───────────────────
+                ◀─── PGN + scores ────────────────────
 
 [Your machine]  ──── POST /api/broker/submit ────────▶  [Arena API]
 ```
@@ -67,6 +67,15 @@ Full guide: https://chessagents.ai/arbiter
 |---|---|---|---|
 | `WORKER_PRIVATE_KEY` | Yes | — | Your arbiter private key (public key is derived automatically) |
 | `API_URL` | No | `https://chess-agents-api-production.up.railway.app` | Arena API endpoint |
+| `POLL_INTERVAL_MS` | No | `2000` | Milliseconds between polls. Minimum `500`. Lower = faster pickup, more requests. |
+| `POLL_COUNT` | No | `1` | Jobs fetched per poll (1–50). Raise if you have spare cores; each job runs in a subprocess. |
+| `RATE_LIMIT` | No | — | Cap polls per window. Format `N/Xs` or `N/Xm` (e.g. `100/10s`, `500/1m`). Exceeded polls are skipped, not errored. |
+
+**Tuning tips:**
+- Single-core VPS: leave defaults (`POLL_COUNT=1`, `POLL_INTERVAL_MS=2000`)
+- 4–8 core machine: try `POLL_COUNT=4` and `POLL_INTERVAL_MS=1000`
+- High-core workstation (16+): `POLL_COUNT=16` and `POLL_INTERVAL_MS=500`
+- Self-imposed throttling: `RATE_LIMIT=60/1m` to stay under 60 polls/min regardless of interval
 
 ---
 
