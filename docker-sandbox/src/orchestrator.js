@@ -6,12 +6,12 @@
 // operation with crash recovery and container leak prevention.
 // =============================================================================
 
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, existsSync } from 'node:fs';
-import { fetchJobs, submitResult } from './api-client.js';
+import { fetchJobs, submitResult, reportCrash, verifyJobIntegrity, initServerPublicKey } from './api-client.js';
 import config from './config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -97,15 +97,19 @@ function cleanupContainers() {
 
         for (const line of output.split('\n')) {
             const [name, ...statusParts] = line.split(' ');
+            if (!name) continue;
             const status = statusParts.join(' ');
-            // Kill containers that have been running > 5 minutes
-            if (status.includes('Up') && (status.includes('minutes') || status.includes('hours'))) {
+            // Kill containers running >= 10 minutes (orphaned — healthy games finish well under that)
+            const minutesMatch = status.match(/Up (\d+) minutes?/);
+            const isOld = status.includes('hour') || status.includes('day') ||
+                (minutesMatch !== null && parseInt(minutesMatch[1], 10) >= 10);
+            if (isOld) {
                 log(`Cleaning orphaned container: ${name}`);
-                try { execSync(`docker rm -f ${name}`, { stdio: 'pipe', timeout: 5000 }); } catch {}
+                try { execFileSync('docker', ['rm', '-f', name], { stdio: 'pipe', timeout: 5000 }); } catch {}
             }
             // Remove exited containers
             if (status.includes('Exited')) {
-                try { execSync(`docker rm ${name}`, { stdio: 'pipe', timeout: 5000 }); } catch {}
+                try { execFileSync('docker', ['rm', name], { stdio: 'pipe', timeout: 5000 }); } catch {}
             }
         }
     } catch {}
@@ -118,9 +122,15 @@ async function processJob(job) {
     const { jobId, matchId, challenger, defender, gamesPlanned = 1 } = job;
     log(`Job ${jobId.slice(0, 8)}: ${challenger.name} vs ${defender.name} (${gamesPlanned} game(s))`);
 
+    if (!await verifyJobIntegrity(job)) {
+        log(`  Skipping job ${jobId.slice(0, 8)} — server signature invalid.`);
+        return;
+    }
+
     let challengerTotal = 0;
     let defenderTotal = 0;
     const pgns = [];
+    let crashReason = null;
 
     for (let g = 0; g < gamesPlanned; g++) {
         const swap = g % 2 === 1;
@@ -159,27 +169,34 @@ async function processJob(job) {
                 else { defenderTotal += 1; stats.results.black++; }
             }
         } catch (err) {
-            logError(`Game ${g + 1} failed for job ${jobId.slice(0, 8)}`, err);
+            logError(`Game ${g + 1} crashed for job ${jobId.slice(0, 8)}`, err);
             stats.errors++;
-            challengerTotal += 0.5;
-            defenderTotal += 0.5;
-            // Must still produce a PGN entry to match gamesPlanned count
+            crashReason = `Game ${g + 1} crashed: ${err.message?.slice(0, 100) || 'unknown'}`;
             pgns.push(
                 `[Event "ChessAgents Arena"]\n[Site "Docker Sandbox"]\n` +
                 `[Date "${new Date().toISOString().slice(0, 10).replace(/-/g, '.')}"]\n` +
                 `[White "${whiteName}"]\n[Black "${blackName}"]\n` +
-                `[Result "1/2-1/2"]\n[Termination "error: ${err.message?.slice(0, 50) || 'unknown'}"]\n\n1/2-1/2\n`
+                `[Result "*"]\n[Termination "crash"]\n\n*\n`
             );
         }
     }
 
-    let overallResult;
-    if (challengerTotal > defenderTotal) overallResult = '1-0';
-    else if (defenderTotal > challengerTotal) overallResult = '0-1';
-    else overallResult = '1/2-1/2';
-
-    // Each PGN ends with \n, so join with \n gives exactly one blank line between games
     const fullPgn = pgns.join('\n');
+
+    if (crashReason) {
+        try {
+            await reportCrash({ jobId, matchId, reason: crashReason, pgn: fullPgn });
+            log(`  Crash reported for job ${jobId.slice(0, 8)} — no ratings applied.`);
+        } catch (err) {
+            logError(`Failed to report crash for job ${jobId.slice(0, 8)}`, err);
+        }
+        return;
+    }
+
+    const overallResult = challengerTotal > defenderTotal ? 'challenger'
+        : defenderTotal > challengerTotal ? 'defender'
+        : 'draw';
+
     try {
         await submitResult({
             jobId,
@@ -214,6 +231,8 @@ export async function runLoop() {
     log(`Broker: ${config.brokerUrl}`);
     log(`Runner ID: ${config.brokerId}`);
     log(`Move timeout: ${config.agentMoveTimeoutMs}ms`);
+
+    await initServerPublicKey();
 
     // Clean up any orphaned containers from previous runs
     cleanupContainers();

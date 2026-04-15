@@ -34,17 +34,21 @@ if (config.brokerKeyPath) {
 function signData(data) {
     if (!PRIVATE_KEY) throw new Error('No private key loaded — set BROKER_KEY_PATH');
     const key = crypto.createPrivateKey(PRIVATE_KEY);
-    return crypto.sign('sha256', Buffer.from(data), key).toString('base64');
+    const alg = key.asymmetricKeyType === 'rsa' ? 'sha256' : null;
+    return crypto.sign(alg, Buffer.from(data), key).toString('base64');
 }
 
 function buildSigningString(endpoint, fields) {
     if (endpoint === 'next-jobs') return `next-jobs:${fields.count}`;
     if (endpoint === 'submit') return `submit:${fields.jobId}:${fields.matchId}`;
+    if (endpoint === 'report-crash') return `report-crash:${fields.jobId}:${fields.matchId}`;
     return '';
 }
 
 async function signedPost(path, body) {
-    const endpointKey = path.includes('next-jobs') ? 'next-jobs' : 'submit';
+    const endpointKey = path.includes('next-jobs') ? 'next-jobs'
+        : path.includes('report-crash') ? 'report-crash'
+        : 'submit';
     const signingString = buildSigningString(endpointKey, body);
 
     const headers = { 'Content-Type': 'application/json' };
@@ -145,4 +149,63 @@ export async function submitResult(result) {
     return res.json();
 }
 
-export default { fetchJobs, submitResult };
+/**
+ * Report a crashed match to the broker (no rating changes applied).
+ */
+export async function reportCrash(result) {
+    const body = {
+        jobId: result.jobId,
+        matchId: result.matchId,
+        reason: result.reason,
+        pgn: result.pgn,
+    };
+
+    const res = await signedPost('/report-crash', body);
+
+    if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`Broker report-crash failed: ${res.status} ${res.statusText} — ${text.slice(0, 200)}`);
+    }
+}
+
+// --- Server signature verification ---
+
+let serverPublicKey = null;
+
+/**
+ * Fetch the server's Ed25519 public key and cache it.
+ * Must be called once at startup before processing any jobs.
+ */
+export async function initServerPublicKey() {
+    // brokerUrl is like https://host/api/broker — strip to get https://host/api
+    const apiBase = config.brokerUrl.replace(/\/broker\/?$/, '');
+    const res = await fetch(`${apiBase}/public-key`);
+    if (!res.ok) throw new Error(`Failed to fetch server public key: ${res.status}`);
+    const data = await res.json();
+    serverPublicKey = data.publicKey;
+    console.log('[api-client] Server public key loaded.');
+}
+
+/**
+ * Verify the server's Ed25519 signature over (matchId + challengerHash + defenderHash).
+ * Returns false and logs a warning if verification fails or key not loaded.
+ */
+export function verifyJobIntegrity(job) {
+    if (!serverPublicKey) {
+        console.warn('[api-client] Server public key not loaded — skipping integrity check.');
+        return true;
+    }
+    try {
+        const signingString = job.matchId + job.challengerHash + job.defenderHash;
+        return crypto.verify(
+            null,
+            Buffer.from(signingString),
+            serverPublicKey,
+            Buffer.from(job.serverSignature, 'base64')
+        );
+    } catch {
+        return false;
+    }
+}
+
+export default { fetchJobs, submitResult, reportCrash, initServerPublicKey, verifyJobIntegrity };

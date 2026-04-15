@@ -47,8 +47,8 @@ function startContainer(matchId, color, agentCode, language) {
     try {
         // Start container with sleep infinity
         // Note: tmpfs does NOT have noexec so node/python can run agent code from /tmp
-        execSync([
-            'docker', 'run', '-d',
+        execFileSync('docker', [
+            'run', '-d',
             '--name', containerName,
             '--network', 'none',
             '--read-only',
@@ -60,7 +60,7 @@ function startContainer(matchId, color, agentCode, language) {
             '--tmpfs', '/tmp:size=10m,nodev,nosuid',
             config.sandboxImage,
             'sleep', 'infinity',
-        ].join(' '), { stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 });
+        ], { stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 });
 
         // Pipe agent code into container's writable tmpfs via docker exec
         execFileSync('docker', [
@@ -119,7 +119,7 @@ function getAgentMove(containerName, fen, language, timeoutMs, ext) {
  */
 function stopContainer(containerName) {
     try {
-        execSync(`docker rm -f ${containerName}`, {
+        execFileSync('docker', ['rm', '-f', containerName], {
             stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000
         });
     } catch {}
