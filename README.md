@@ -57,6 +57,7 @@ Full guide: https://chessagents.ai/arbiter
 | `POLL_INTERVAL_MS` | No | `2000` | Milliseconds between polls. Minimum `500`. Lower = faster pickup, more requests. |
 | `POLL_COUNT` | No | `1` | Jobs fetched per poll (1–50). Raise if you have spare cores; each job runs in a subprocess. |
 | `RATE_LIMIT` | No | — | Cap polls per window. Format `N/Xs` or `N/Xm` (e.g. `100/10s`, `500/1m`). Exceeded polls are skipped, not errored. |
+| `MATCH_TYPES` | No | — | Comma-separated list of match types to run. Omit to run all authorized types. Example: `training` or `training,rating`. |
 
 **Tuning tips:**
 - Single-core VPS: leave defaults (`POLL_COUNT=1`, `POLL_INTERVAL_MS=2000`)

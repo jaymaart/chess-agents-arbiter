@@ -11,6 +11,11 @@ let WORKER_PUBLIC_KEY = "";
 const POLL_INTERVAL_MS = Math.max(500, parseInt(process.env.POLL_INTERVAL_MS || "2000", 10));
 const POLL_COUNT = Math.max(1, Math.min(50, parseInt(process.env.POLL_COUNT || "1", 10)));
 
+// Optional: limit to specific match types, e.g. MATCH_TYPES=training or MATCH_TYPES=training,rating
+const MATCH_TYPES: string[] | null = process.env.MATCH_TYPES
+  ? process.env.MATCH_TYPES.split(",").map(s => s.trim()).filter(Boolean)
+  : null;
+
 // Soft rate limit: RATE_LIMIT="100/10s" means at most 100 requests per 10-second window.
 // If exceeded, the poll is skipped (not errored) until the window clears.
 let rateLimitMax = Infinity;
@@ -185,7 +190,9 @@ async function poll(): Promise<void> {
     console.warn(`[Arbiter] Rate limit reached (${rateLimitMax} reqs/${rateLimitWindowMs / 1000}s) — skipping poll.`);
   } else {
     try {
-      const res = await signedPost("/api/broker/next-jobs", { count: POLL_COUNT });
+      const body: Record<string, unknown> = { count: POLL_COUNT };
+      if (MATCH_TYPES) body.matchTypes = MATCH_TYPES;
+      const res = await signedPost("/api/broker/next-jobs", body);
       if (!res.ok) {
         const err = await res.json().catch(() => ({})) as any;
         console.error(`[Arbiter] Failed to fetch jobs: ${err.error || res.status}`);
@@ -221,7 +228,8 @@ export async function startBrokerRunner(): Promise<void> {
   console.log(`[Arbiter] API: ${API_URL}`);
   console.log(`[Arbiter] Identity: ${WORKER_PUBLIC_KEY.slice(27, 60)}...`);
   console.log(`[Arbiter] Poll interval: ${POLL_INTERVAL_MS}ms | Jobs per poll: ${POLL_COUNT}` +
-    (rateLimitMax < Infinity ? ` | Rate limit: ${rateLimitMax}/${rateLimitWindowMs / 1000}s` : ""));
+    (rateLimitMax < Infinity ? ` | Rate limit: ${rateLimitMax}/${rateLimitWindowMs / 1000}s` : "") +
+    (MATCH_TYPES ? ` | Match types: ${MATCH_TYPES.join(", ")}` : ""));
 
   await fetchServerPublicKey();
   console.log("[Arbiter] Ready. Polling for matches.");
