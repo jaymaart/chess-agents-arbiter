@@ -8,8 +8,8 @@ const API_URL = (process.env.API_URL || "https://chess-agents-api-production.up.
 const WORKER_PRIVATE_KEY = process.env.WORKER_PRIVATE_KEY || "";
 let WORKER_PUBLIC_KEY = "";
 
-const POLL_INTERVAL_MS = Math.max(500, parseInt(process.env.POLL_INTERVAL_MS || "2000", 10));
-const POLL_COUNT = Math.max(1, Math.min(50, parseInt(process.env.POLL_COUNT || "1", 10)));
+const POLL_INTERVAL_MS = Math.max(500, parseInt(process.env.POLL_INTERVAL_MS || "30000", 10));
+const POLL_COUNT = Math.max(1, Math.min(50, parseInt(process.env.POLL_COUNT || "10", 10)));
 
 // Optional: limit to specific match types, e.g. MATCH_TYPES=training or MATCH_TYPES=training,rating
 const MATCH_TYPES: string[] | null = process.env.MATCH_TYPES

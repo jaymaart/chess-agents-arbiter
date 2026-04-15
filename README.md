@@ -54,15 +54,15 @@ Full guide: https://chessagents.ai/arbiter
 |---|---|---|---|
 | `WORKER_PRIVATE_KEY` | Yes | — | Your arbiter private key (public key is derived automatically) |
 | `API_URL` | No | `https://chess-agents-api-production.up.railway.app` | Arena API endpoint |
-| `POLL_INTERVAL_MS` | No | `2000` | Milliseconds between polls. Minimum `500`. Lower = faster pickup, more requests. |
-| `POLL_COUNT` | No | `1` | Jobs fetched per poll (1–50). Raise if you have spare cores; each job runs in a subprocess. |
+| `POLL_INTERVAL_MS` | No | `30000` | Milliseconds between polls. Minimum `500`. |
+| `POLL_COUNT` | No | `10` | Jobs fetched per poll (1–50). Raise if you have spare cores; each job runs in a subprocess. |
 | `RATE_LIMIT` | No | — | Cap polls per window. Format `N/Xs` or `N/Xm` (e.g. `100/10s`, `500/1m`). Exceeded polls are skipped, not errored. |
 | `MATCH_TYPES` | No | — | Comma-separated list of match types to run. Omit to run all authorized types. Example: `training` or `training,rating`. |
 
 **Tuning tips:**
-- Single-core VPS: leave defaults (`POLL_COUNT=1`, `POLL_INTERVAL_MS=2000`)
-- 4–8 core machine: try `POLL_COUNT=4` and `POLL_INTERVAL_MS=1000`
-- High-core workstation (16+): `POLL_COUNT=16` and `POLL_INTERVAL_MS=500`
+- Single-core VPS: `POLL_COUNT=2`, `POLL_INTERVAL_MS=30000`
+- 4–8 core machine: `POLL_COUNT=10`, `POLL_INTERVAL_MS=30000` (default)
+- High-core workstation (16+): `POLL_COUNT=20`, `POLL_INTERVAL_MS=15000`
 - Self-imposed throttling: `RATE_LIMIT=60/1m` to stay under 60 polls/min regardless of interval
 
 ---
