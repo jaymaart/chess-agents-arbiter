@@ -25,6 +25,10 @@ const UCI_MOVE_REGEX = /[a-h][1-8][a-h][1-8][qrbn]?/;
 const MAX_PLIES = 500;
 const MOVE_TIMEOUT_MS = 5000;
 
+// On Windows, `python3` is not a default alias — only `python` or `py`.
+// On macOS/Linux, `python3` is the canonical name.
+const PYTHON_CMD = process.platform === "win32" ? "python" : "python3";
+
 class EngineController {
   private child: ChildProcess | null = null;
   private config: AgentConfig;
@@ -35,10 +39,14 @@ class EngineController {
   }
 
   private spawn() {
-    const runtime = this.config.language === "js" ? "node" : "python3";
+    const runtime = this.config.language === "js" ? "node" : PYTHON_CMD;
+    // Pass full process.env — on Windows, node.exe requires SYSTEMROOT (and
+    // other vars) to initialize. Stripping env to just PATH caused subprocesses
+    // to exit with code 1 before producing any output.
     this.child = spawn(runtime, [this.config.path], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { PATH: process.env.PATH },
+      env: process.env,
+      shell: process.platform === "win32", // Windows needs shell resolution for python/py
     });
 
     this.child.on("exit", () => {
@@ -56,6 +64,7 @@ class EngineController {
     return new Promise((resolve, reject) => {
       let completed = false;
       let stdout = "";
+      let stderr = "";
 
       const onData = (data: Buffer) => {
         stdout += data.toString();
@@ -73,6 +82,10 @@ class EngineController {
         }
       };
 
+      const onStderr = (data: Buffer) => {
+        stderr += data.toString();
+      };
+
       const onExit = (code: number | null) => {
         if (!completed) {
           completed = true;
@@ -81,7 +94,8 @@ class EngineController {
           if (match) {
             resolve(match[0]);
           } else {
-            reject(new Error(`engine exited with code ${code} without a valid move`));
+            const details = stderr.trim().slice(0, 500) || stdout.trim().slice(0, 500) || "(no output)";
+            reject(new Error(`engine exited with code ${code} without a valid move: ${details}`));
           }
         }
       };
@@ -106,11 +120,13 @@ class EngineController {
       const cleanup = () => {
         clearTimeout(timeout);
         child.stdout?.removeListener("data", onData);
+        child.stderr?.removeListener("data", onStderr);
         child.removeListener("exit", onExit);
         child.removeListener("error", onError);
       };
 
       child.stdout?.on("data", onData);
+      child.stderr?.on("data", onStderr);
       child.on("exit", onExit);
       child.on("error", onError);
 
