@@ -58,6 +58,48 @@ Full guide: https://chessagents.ai/arbiter
 | `POLL_COUNT` | No | `10` | Jobs fetched per poll (1–50). Raise if you have spare cores; each job runs in a subprocess. |
 | `RATE_LIMIT` | No | — | Cap polls per window. Format `N/Xs` or `N/Xm` (e.g. `100/10s`, `500/1m`). Exceeded polls are skipped, not errored. |
 | `MATCH_TYPES` | No | — | Comma-separated list of match types to run. Omit to run all authorized types. Example: `training` or `training,rating`. |
+| `AUTO_UPDATE` | No | `false` | Set to `true` to enable automatic updates (see below). |
+| `DOCKER_IMAGE` | No | `ghcr.io/jaymaart/chess-agents-arbiter:latest` | Image to pull when auto-updating. Override if you mirror the image. |
+
+---
+
+## Auto-update
+
+When `AUTO_UPDATE=true`, the arbiter checks [GitHub releases](https://github.com/jaymaart/chess-agents-arbiter/releases) on startup and whenever the API rejects it for being outdated. If a newer version is found, it pulls the new Docker image and exits — Docker's `restart: always` policy then starts a fresh container on the new image.
+
+**Requirements:**
+- `restart: always` (or `restart: unless-stopped`) in your Docker config
+- The Docker socket mounted into the container: `-v /var/run/docker.sock:/var/run/docker.sock`
+
+**docker run example:**
+
+```bash
+docker run -d --restart always \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -e WORKER_PRIVATE_KEY="<your-private-key>" \
+  -e AUTO_UPDATE=true \
+  ghcr.io/jaymaart/chess-agents-arbiter:latest
+```
+
+**docker-compose example:**
+
+```yaml
+services:
+  arbiter:
+    image: ghcr.io/jaymaart/chess-agents-arbiter:latest
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WORKER_PRIVATE_KEY=<your-private-key>
+      - AUTO_UPDATE=true
+```
+
+Without `AUTO_UPDATE=true`, the arbiter still checks for updates and logs a notice when one is available — it just won't apply it automatically.
+
+> **Note:** Mounting the Docker socket gives the container the ability to pull images and restart itself. Only enable this if you're comfortable with that tradeoff. The arbiter uses it exclusively for self-updates.
+
+---
 
 **Tuning tips:**
 - Single-core VPS: `POLL_COUNT=2`, `POLL_INTERVAL_MS=30000`
