@@ -23,7 +23,7 @@ export interface AgentConfig {
 
 const UCI_MOVE_REGEX = /[a-h][1-8][a-h][1-8][qrbn]?/;
 const MAX_PLIES = 500;
-const MOVE_TIMEOUT_MS = 5000;
+const MOVE_TIMEOUT_MS = 15000;
 
 // On Windows, `python3` is not a default alias — only `python` or `py`.
 // On macOS/Linux, `python3` is the canonical name.
