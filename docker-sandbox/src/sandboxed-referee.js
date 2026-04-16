@@ -24,6 +24,14 @@ function detectExt(code, language) {
     return (code.includes('require(') && !code.includes('import ')) ? '.js' : '.mjs';
 }
 
+function normalizeExt(ext) {
+    return ext === '.py' || ext === '.js' || ext === '.mjs' ? ext : '.mjs';
+}
+
+function runtimeForLanguage(language) {
+    return language === 'py' ? 'python3' : 'node';
+}
+
 function runDocker(args, { input, timeoutMs = 10000 } = {}) {
     return new Promise((resolve, reject) => {
         const child = spawn('docker', args, { stdio: 'pipe' });
@@ -59,7 +67,7 @@ function runDocker(args, { input, timeoutMs = 10000 } = {}) {
 }
 
 async function startContainer(containerName, code, language) {
-    const ext = detectExt(code, language);
+    const ext = normalizeExt(detectExt(code, language));
     await runDocker([
         'run', '-d', '--name', containerName,
         '--network', 'none',
@@ -88,8 +96,7 @@ async function stopContainer(containerName) {
 }
 
 function getAgentMove(containerName, fen, language, ext) {
-    const runtime = language === 'py' ? 'python3' : 'node';
-    const safeExt = ext === '.py' || ext === '.js' || ext === '.mjs' ? ext : '.mjs';
+    const runtime = runtimeForLanguage(language);
     return new Promise(resolve => {
         let stdout = '';
         let stdoutBytes = 0;
@@ -99,7 +106,7 @@ function getAgentMove(containerName, fen, language, ext) {
 
         const child = spawn('docker', [
             'exec', '-i', containerName,
-            'sh', '-lc', `timeout -k 1s ${(config.agentMoveTimeoutMs / 1000).toFixed(3)}s ${runtime} /tmp/agent${safeExt}`,
+            'sh', '-lc', `timeout -k 1s ${(config.agentMoveTimeoutMs / 1000).toFixed(3)}s ${runtime} /tmp/agent${normalizeExt(ext)}`,
         ], { stdio: 'pipe' });
 
         const finish = (value) => {
