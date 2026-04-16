@@ -323,10 +323,15 @@ function logStats(): void {
     ? `${Math.floor(upMins / 60)}h${upMins % 60}m`
     : `${upMins}m`;
   const maxNow = getMaxConcurrent();
+  const secsToNext = Math.max(0, Math.ceil((nextPollAt - Date.now()) / 1000));
+  const nextStr = secsToNext >= 60
+    ? `${Math.floor(secsToNext / 60)}m${secsToNext % 60}s`
+    : `${secsToNext}s`;
   console.log(
     `${D}[Arbiter]${R} ${G}${activeJobs.size}${R}/${maxNow} active` +
     `  ·  ${G}${matchesCompleted}${R} done  ·  ${matchesFailed > 0 ? Y : D}${matchesFailed}${R} failed` +
     `  ·  ${rpm}/min  ·  load ${load}  ·  up ${upStr}` +
+    (nextPollAt > 0 ? `  ·  next poll ${D}${nextStr}${R}` : "") +
     (pollBackoffMs > 0 ? `  ·  ${Y}backoff ${pollBackoffMs / 1000}s${R}` : "")
   );
 }
@@ -584,6 +589,7 @@ const activeJobs = new Set<Promise<void>>();
 let draining = false;
 let lastCleanup = 0;
 let pollBackoffMs = 0;
+let nextPollAt = 0;
 const MAX_POLL_BACKOFF_MS = 60_000;
 
 function fireJob(job: any): void {
@@ -691,6 +697,7 @@ async function poll(): Promise<void> {
   // Add backoff if server recently rate-limited us.
   if (!draining) {
     const delay = (activeJobs.size >= maxNow ? 2000 : POLL_INTERVAL_MS) + pollBackoffMs;
+    nextPollAt = Date.now() + delay;
     setTimeout(poll, delay);
   }
 }
