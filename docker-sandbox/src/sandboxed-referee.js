@@ -67,7 +67,7 @@ function getAgentMove(containerName, fen, language, ext) {
         }, config.agentMoveTimeoutMs);
 
         child.stdout?.on('data', d => {
-            stdoutBytes += d.length;
+            stdoutBytes += Buffer.byteLength(d);
             if (!completed && stdoutBytes > MAX_AGENT_STDOUT_BYTES) {
                 completed = true;
                 clearTimeout(timer);
