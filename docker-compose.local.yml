@@ -2,6 +2,7 @@ services:
   arbiter:
     image: chess-agents-arbiter:local
     restart: always
+    stop_grace_period: 120s
     env_file:
       - ../chess-agents/.env.arbiter
     environment:

@@ -17,6 +17,7 @@ let WORKER_PUBLIC_KEY = "";
 
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || "5000", 10);
 const HEARTBEAT_INTERVAL_MS = parseInt(process.env.HEARTBEAT_INTERVAL_MS || "10000", 10);
+const DRAIN_TIMEOUT_MS = Math.max(10_000, parseInt(process.env.DRAIN_TIMEOUT_MS || "90000", 10));
 
 // Stable arbiter identity — set ARBITER_ID in env or auto-generate per-process.
 const ARBITER_ID = process.env.ARBITER_ID || `arbiter-${Math.random().toString(36).slice(2, 10)}`;
@@ -127,7 +128,9 @@ async function pullAndRestart(): Promise<void> {
       req.on("error", reject);
       req.end();
     });
-    console.log("[Arbiter] Pull complete. Restarting on new image...");
+    console.log("[Arbiter] Pull complete. Draining before restart...");
+    draining = true;
+    await drain();
     process.exit(0);
   } catch (err: any) {
     console.warn(`[Arbiter] Auto-update pull failed: ${err.message}`);
@@ -529,13 +532,12 @@ function fireJob(job: any): void {
 }
 
 async function drain(): Promise<void> {
-  const DRAIN_TIMEOUT_MS = 90_000;
   const start = Date.now();
   if (activeJobs.size === 0) {
     console.log("[Arbiter] Drain complete — no active jobs.");
     return;
   }
-  console.log(`[Arbiter] Draining — waiting for ${activeJobs.size} active job(s) to finish (timeout: 90s)...`);
+  console.log(`[Arbiter] Draining — waiting for ${activeJobs.size} active job(s) to finish (timeout: ${Math.round(DRAIN_TIMEOUT_MS / 1000)}s)...`);
   while (activeJobs.size > 0 && Date.now() - start < DRAIN_TIMEOUT_MS) {
     await new Promise(r => setTimeout(r, 1000));
     if (activeJobs.size > 0) {
