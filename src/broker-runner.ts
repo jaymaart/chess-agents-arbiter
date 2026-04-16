@@ -508,6 +508,8 @@ async function sendHeartbeat(): Promise<void> {
 
 const activeJobs = new Set<Promise<void>>();
 let lastCleanup = 0;
+let pollBackoffMs = 0;
+const MAX_POLL_BACKOFF_MS = 60_000;
 
 function fireJob(job: any): void {
   let p: Promise<void>;
@@ -540,6 +542,13 @@ async function poll(): Promise<void> {
           break;
         }
 
+        if (res.status === 429) {
+          const err = await res.json().catch(() => ({})) as any;
+          pollBackoffMs = Math.min(pollBackoffMs ? pollBackoffMs * 2 : 5_000, MAX_POLL_BACKOFF_MS);
+          console.warn(`[Arbiter] Rate limited by server: ${err.error || res.status} — backing off ${pollBackoffMs / 1000}s`);
+          break;
+        }
+
         if (!res.ok) {
           const err = await res.json().catch(() => ({})) as any;
           console.error(`[Arbiter] Failed to fetch jobs: ${err.error || res.status}`);
@@ -547,6 +556,7 @@ async function poll(): Promise<void> {
         }
 
         const jobs = await res.json() as any[];
+        pollBackoffMs = 0; // successful fetch — reset backoff
 
         autoScale(jobs.length, slots);
 
@@ -580,8 +590,9 @@ async function poll(): Promise<void> {
     lastCleanup = Date.now();
   }
 
-  // Sleep shorter when all slots full (just waiting for a slot to open)
-  const delay = activeJobs.size >= maxNow ? 2000 : POLL_INTERVAL_MS;
+  // Sleep shorter when all slots full (just waiting for a slot to open).
+  // Add backoff if server recently rate-limited us.
+  const delay = (activeJobs.size >= maxNow ? 2000 : POLL_INTERVAL_MS) + pollBackoffMs;
   setTimeout(poll, delay);
 }
 
