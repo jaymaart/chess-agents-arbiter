@@ -279,7 +279,23 @@ function getMaxConcurrent(): number {
   return Math.max(nightBase, dynamicMaxConcurrent);
 }
 
-// Auto-scaler: called after every poll, adjusts dynamicMaxConcurrent based on pressure.
+// Emergency scale-down — runs every poll tick regardless of slot availability.
+// autoScale() is only called when we have free slots and fetch from the broker,
+// so when all slots are full it never fires. This runs unconditionally.
+function checkEmergencyScaleDown(): void {
+  const load1m = os.loadavg()[0];
+  const cores = os.cpus().length;
+  if (load1m >= cores * 1.5 && dynamicMaxConcurrent > MIN_CONCURRENT) {
+    const next = Math.max(Math.floor(dynamicMaxConcurrent * 0.75), MIN_CONCURRENT);
+    if (next !== dynamicMaxConcurrent) {
+      console.log(`[Arbiter] Emergency scale-down: ${dynamicMaxConcurrent} → ${next} (load=${load1m.toFixed(1)}, cores=${cores})`);
+      dynamicMaxConcurrent = next;
+    }
+    pressureScore = 0;
+  }
+}
+
+// Auto-scaler: called after every successful broker fetch, adjusts dynamicMaxConcurrent based on pressure.
 // pressure > 3 consecutive full polls → scale up 25%
 // pressure < -5 consecutive empty polls → scale down 10%
 function autoScale(jobsReturned: number, slotsRequested: number): void {
@@ -291,18 +307,8 @@ function autoScale(jobsReturned: number, slotsRequested: number): void {
     pressureScore = Math.max(pressureScore - 0.5, -10);
   }
 
-  // Emergency scale-down if system is critically overloaded (load > 1.5x core count)
   const load1m = os.loadavg()[0];
   const cores = os.cpus().length;
-  if (load1m >= cores * 1.5 && dynamicMaxConcurrent > MIN_CONCURRENT) {
-    const next = Math.max(Math.floor(dynamicMaxConcurrent * 0.75), MIN_CONCURRENT);
-    if (next !== dynamicMaxConcurrent) {
-      console.log(`[Arbiter] Emergency scale-down: ${dynamicMaxConcurrent} → ${next} (load=${load1m.toFixed(1)}, cores=${cores})`);
-      dynamicMaxConcurrent = next;
-    }
-    pressureScore = 0;
-    return;
-  }
 
   if (pressureScore >= 3) {
     // Suppress scale-up if local load is near saturation (> 85% of core count)
@@ -545,6 +551,7 @@ async function drain(): Promise<void> {
 
 async function poll(): Promise<void> {
   if (draining) return;
+  checkEmergencyScaleDown();
   const maxNow = getMaxConcurrent();
   const slots = maxNow - activeJobs.size;
 
