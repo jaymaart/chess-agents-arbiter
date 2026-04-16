@@ -507,6 +507,7 @@ async function sendHeartbeat(): Promise<void> {
 }
 
 const activeJobs = new Set<Promise<void>>();
+let draining = false;
 let lastCleanup = 0;
 let pollBackoffMs = 0;
 const MAX_POLL_BACKOFF_MS = 60_000;
@@ -521,7 +522,29 @@ function fireJob(job: any): void {
   activeJobs.add(p);
 }
 
+async function drain(): Promise<void> {
+  const DRAIN_TIMEOUT_MS = 90_000;
+  const start = Date.now();
+  if (activeJobs.size === 0) {
+    console.log("[Arbiter] Drain complete — no active jobs.");
+    return;
+  }
+  console.log(`[Arbiter] Draining — waiting for ${activeJobs.size} active job(s) to finish (timeout: 90s)...`);
+  while (activeJobs.size > 0 && Date.now() - start < DRAIN_TIMEOUT_MS) {
+    await new Promise(r => setTimeout(r, 1000));
+    if (activeJobs.size > 0) {
+      console.log(`[Arbiter] Draining — ${activeJobs.size} job(s) remaining (${Math.round((Date.now() - start) / 1000)}s elapsed)...`);
+    }
+  }
+  if (activeJobs.size > 0) {
+    console.warn(`[Arbiter] Drain timeout reached — ${activeJobs.size} job(s) still running. Forcing exit.`);
+  } else {
+    console.log("[Arbiter] Drain complete. All jobs finished.");
+  }
+}
+
 async function poll(): Promise<void> {
+  if (draining) return;
   const maxNow = getMaxConcurrent();
   const slots = maxNow - activeJobs.size;
 
@@ -592,8 +615,10 @@ async function poll(): Promise<void> {
 
   // Sleep shorter when all slots full (just waiting for a slot to open).
   // Add backoff if server recently rate-limited us.
-  const delay = (activeJobs.size >= maxNow ? 2000 : POLL_INTERVAL_MS) + pollBackoffMs;
-  setTimeout(poll, delay);
+  if (!draining) {
+    const delay = (activeJobs.size >= maxNow ? 2000 : POLL_INTERVAL_MS) + pollBackoffMs;
+    setTimeout(poll, delay);
+  }
 }
 
 export async function startBrokerRunner(): Promise<void> {
@@ -631,6 +656,15 @@ export async function startBrokerRunner(): Promise<void> {
     cleanupOrphanContainers();
     lastCleanup = Date.now();
   }
+
+  const shutdown = async (signal: string) => {
+    console.log(`[Arbiter] ${signal} received — entering drain mode.`);
+    draining = true;
+    await drain();
+    process.exit(activeJobs.size > 0 ? 1 : 0);
+  };
+  process.once("SIGTERM", () => { shutdown("SIGTERM").catch(err => { console.error("[Arbiter] Shutdown error:", err); process.exit(1); }); });
+  process.once("SIGINT",  () => { shutdown("SIGINT").catch(err => { console.error("[Arbiter] Shutdown error:", err); process.exit(1); }); });
 
   startedAt = Date.now();
   console.log("[Arbiter] Ready. Polling for matches.");
