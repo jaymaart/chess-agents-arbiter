@@ -67,16 +67,18 @@ function getAgentMove(containerName, fen, language, ext) {
         }, config.agentMoveTimeoutMs);
 
         child.stdout?.on('data', d => {
-            stdoutBytes += Buffer.byteLength(d);
-            if (!completed && stdoutBytes > MAX_AGENT_STDOUT_BYTES) {
+            if (completed) return;
+            const chunkBytes = Buffer.byteLength(d);
+            if (stdoutBytes + chunkBytes > MAX_AGENT_STDOUT_BYTES) {
                 completed = true;
                 clearTimeout(timer);
                 child.kill('SIGKILL');
                 resolve('__CRASH__');
                 return;
             }
+            stdoutBytes += chunkBytes;
             stdout += d.toString();
-            if (!completed && stdout.includes('\n')) {
+            if (stdout.includes('\n')) {
                 const m = stdout.match(UCI_MOVE_REGEX);
                 if (m) { completed = true; clearTimeout(timer); child.kill(); resolve(m[0]); }
             }
