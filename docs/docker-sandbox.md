@@ -49,7 +49,7 @@ Env vars (in `docker-sandbox/.env`):
 | `BROKER_SECRET` | — | Shared secret (alternative to RSA key) |
 | `MAX_CONCURRENT_MATCHES` | `10` | Parallel matches |
 | `NIGHT_MAX_CONCURRENT` | `20` | Parallel matches during off-peak |
-| `NIGHT_START_HOUR` | `22` | Off-peak start (0–23) |
+| `NIGHT_START_HOUR` | `3` | Off-peak start (0–23) |
 | `NIGHT_END_HOUR` | `8` | Off-peak end (0–23, supports midnight crossing) |
 | `AGENT_MOVE_TIMEOUT_MS` | `8000` | Per-move timeout in ms |
 | `AGENT_MEMORY_LIMIT` | `256m` | Docker memory cap per agent container |
