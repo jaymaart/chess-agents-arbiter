@@ -278,9 +278,11 @@ function printBanner(): void {
   const W = 62;
   const hr = "─".repeat(W);
 
+  // Strip ANSI codes to get the visual length for padding calculations.
+  const vis = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
   const row = (label: string, value: string): string => {
     const lbl = label.padEnd(12);
-    const pad = " ".repeat(Math.max(0, W - 2 - lbl.length - value.length));
+    const pad = " ".repeat(Math.max(0, W - 2 - lbl.length - vis(value)));
     return `${G}│${R} ${D}${lbl}${R}${value}${pad} ${G}│${R}`;
   };
 
