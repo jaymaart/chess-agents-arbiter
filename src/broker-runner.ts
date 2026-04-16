@@ -12,6 +12,7 @@ const ARBITER_VERSION: string = require("../package.json").version;
 
 const API_URL = (process.env.API_URL || "https://chess-agents-api-production.up.railway.app").replace(/\/$/, "");
 const WORKER_PRIVATE_KEY = normalizePem(process.env.WORKER_PRIVATE_KEY || "");
+const BROKER_SECRET = process.env.BROKER_SECRET || "";
 let WORKER_PUBLIC_KEY = "";
 
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || "5000", 10);
@@ -149,6 +150,18 @@ function buildSigningString(endpoint: "next-jobs" | "submit" | "report-crash", f
 }
 
 async function signedPost(endpoint: string, body: object): Promise<Response> {
+  if (BROKER_SECRET) {
+    return fetch(`${API_URL}${endpoint}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-broker-secret": BROKER_SECRET,
+        "x-arbiter-version": ARBITER_VERSION,
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
   const endpointKey = endpoint.includes("next-jobs") ? "next-jobs"
     : endpoint.includes("report-crash") ? "report-crash"
     : "submit";
@@ -263,6 +276,10 @@ async function processJob(job: any): Promise<void> {
   let challengerCode = job.challenger.code as string;
   let defenderCode = job.defender.code as string;
   if (job.encrypted) {
+    if (!WORKER_PRIVATE_KEY) {
+      console.error(`[Arbiter] Match ${job.matchId} is encrypted but no WORKER_PRIVATE_KEY — skipping.`);
+      return;
+    }
     challengerCode = decryptFromServer(challengerCode, WORKER_PRIVATE_KEY);
     defenderCode = decryptFromServer(defenderCode, WORKER_PRIVATE_KEY);
   }
@@ -433,22 +450,24 @@ async function poll(): Promise<void> {
 }
 
 export async function startBrokerRunner(): Promise<void> {
-  if (!WORKER_PRIVATE_KEY) {
+  if (!WORKER_PRIVATE_KEY && !BROKER_SECRET) {
     throw new Error(
-      "Missing required env var: WORKER_PRIVATE_KEY\n" +
+      "Missing required env var: WORKER_PRIVATE_KEY or BROKER_SECRET\n" +
       "Get your Arbiter key at https://chessagents.ai/arbiter"
     );
   }
 
-  try {
-    WORKER_PUBLIC_KEY = publicKeyFromPrivate(WORKER_PRIVATE_KEY);
-  } catch {
-    throw new Error("WORKER_PRIVATE_KEY is invalid — check that you pasted the full PEM including headers");
+  if (WORKER_PRIVATE_KEY) {
+    try {
+      WORKER_PUBLIC_KEY = publicKeyFromPrivate(WORKER_PRIVATE_KEY);
+    } catch {
+      throw new Error("WORKER_PRIVATE_KEY is invalid — check that you pasted the full PEM including headers");
+    }
   }
 
   console.log("[Arbiter] Starting...");
   console.log(`[Arbiter] API: ${API_URL}`);
-  console.log(`[Arbiter] Identity: ${WORKER_PUBLIC_KEY.slice(27, 60)}...`);
+  console.log(`[Arbiter] Auth: ${BROKER_SECRET ? "broker-secret" : `rsa:${WORKER_PUBLIC_KEY.slice(27, 60)}...`}`);
   console.log(
     `[Arbiter] Concurrency: ${MAX_CONCURRENT} (night: ${NIGHT_MAX_CONCURRENT}, ${NIGHT_START_HOUR}:00–${NIGHT_END_HOUR}:00)` +
     ` | Poll: ${POLL_INTERVAL_MS}ms` +
