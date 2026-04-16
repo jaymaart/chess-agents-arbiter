@@ -285,10 +285,12 @@ function getMaxConcurrent(): number {
 // Emergency scale-down — runs every poll tick regardless of slot availability.
 // autoScale() is only called when we have free slots and fetch from the broker,
 // so when all slots are full it never fires. This runs unconditionally.
+// Threshold: 0.9× cores (90% load) — fires before the machine saturates.
+// Scale-up is already suppressed at 0.85×, so this provides a harder backstop.
 function checkEmergencyScaleDown(): void {
   const load1m = os.loadavg()[0];
   const cores = os.cpus().length;
-  if (load1m >= cores * 1.5 && dynamicMaxConcurrent > MIN_CONCURRENT) {
+  if (load1m >= cores * 0.9 && dynamicMaxConcurrent > MIN_CONCURRENT) {
     const next = Math.max(Math.floor(dynamicMaxConcurrent * 0.75), MIN_CONCURRENT);
     if (next !== dynamicMaxConcurrent) {
       console.log(`[Arbiter] Emergency scale-down: ${dynamicMaxConcurrent} → ${next} (load=${load1m.toFixed(1)}, cores=${cores})`);
