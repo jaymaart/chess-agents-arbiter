@@ -1,271 +1,193 @@
 // =============================================================================
 // Sandboxed Referee — runs a single match using Docker-isolated agents
 //
-// Chess engine runs on HOST (trusted). Agent code runs in Docker (untrusted).
-// Each agent gets its own container with --network none, --read-only, etc.
+// Chess engine runs on HOST (trusted, via chess.js). Agent code runs in Docker
+// (untrusted). Each agent gets its own container with --network none,
+// --read-only, etc. Each move is a `docker exec` call; on crash, restarts
+// the container and retries once before forfeiting.
 // =============================================================================
 
-import { execFileSync, execSync } from 'node:child_process';
-import { writeFileSync, unlinkSync, mkdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { spawn, execFileSync } from 'node:child_process';
+import { Chess } from 'chess.js';
 import { randomUUID } from 'node:crypto';
-import {
-    parseFen, boardToFen, applyUciMove, generateLegalMoves,
-    isInCheck, getBoardKey, insufficientMaterial, STARTING_FEN
-} from './chess-engine.js';
-import { buildPgnSync } from './pgn-builder.js';
 import config from './config.js';
 
-const MOVE_REGEX = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
+const UCI_MOVE_REGEX = /[a-h][1-8][a-h][1-8][qrbn]?/;
+const MAX_PLIES = 500;
 
-/**
- * Start a Docker container for an agent.
- * Returns the container name.
- */
-function detectModuleType(code) {
-    // ESM if it uses import/export syntax
-    if (/^\s*import\s+/m.test(code) || /^\s*export\s+/m.test(code)) return 'esm';
-    return 'cjs';
+function detectExt(code, language) {
+    if (language === 'py') return '.py';
+    return (code.includes('require(') && !code.includes('import ')) ? '.js' : '.mjs';
 }
 
-function startContainer(matchId, color, agentCode, language) {
-    const containerName = `match-${matchId}-${color}`;
-    let ext;
-    if (language === 'py') {
-        ext = '.py';
-    } else {
-        // Match Jaymart's arbiter: .mjs for JS agents (Node ESM mode)
-        // Agents using require() get .js (CommonJS), everything else .mjs
-        ext = agentCode.includes('require(') && !agentCode.includes('import ') ? '.js' : '.mjs';
-    }
-    const tmpFile = join(config.dataDir, `${containerName}${ext}`);
+function startContainer(containerName, code, language) {
+    const ext = detectExt(code, language);
+    execFileSync('docker', [
+        'run', '-d', '--name', containerName,
+        '--network', 'none',
+        '--read-only',
+        '--memory', config.agentMemoryLimit,
+        '--cpus', '0.5',
+        '--cap-drop', 'ALL',
+        '--security-opt', 'no-new-privileges',
+        '--pids-limit', '32',
+        '--tmpfs', '/tmp:size=10m,nodev,nosuid',
+        config.sandboxImage, 'sleep', 'infinity',
+    ], { stdio: 'pipe', timeout: 10000 });
 
-    // Write agent code to temp file
-    mkdirSync(config.dataDir, { recursive: true });
-    writeFileSync(tmpFile, agentCode);
+    execFileSync('docker', [
+        'exec', '-i', containerName,
+        'sh', '-c', `cat > /tmp/agent${ext}`,
+    ], { input: code, stdio: 'pipe', timeout: 5000 });
 
-    try {
-        // Start container with sleep infinity
-        // Note: tmpfs does NOT have noexec so node/python can run agent code from /tmp
-        execFileSync('docker', [
-            'run', '-d',
-            '--name', containerName,
-            '--network', 'none',
-            '--read-only',
-            '--memory', config.agentMemoryLimit,
-            '--cpus', '0.5',
-            '--cap-drop', 'ALL',
-            '--security-opt', 'no-new-privileges',
-            '--pids-limit', '32',
-            '--tmpfs', '/tmp:size=10m,nodev,nosuid',
-            config.sandboxImage,
-            'sleep', 'infinity',
-        ], { stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 });
-
-        // Pipe agent code into container's writable tmpfs via docker exec
-        execFileSync('docker', [
-            'exec', '-i', containerName,
-            'sh', '-c', `cat > /tmp/agent${ext}`
-        ], {
-            input: agentCode,
-            timeout: 5000,
-            stdio: ['pipe', 'pipe', 'pipe'],
-        });
-    } finally {
-        // Remove temp file from host
-        try { unlinkSync(tmpFile); } catch {}
-    }
-
-    return { containerName, ext };
+    return ext;
 }
 
-/**
- * Get a move from a Docker-sandboxed agent.
- * @returns {string} UCI move or error sentinel
- */
-function getAgentMove(containerName, fen, language, timeoutMs, ext) {
-    const runtime = language === 'py' ? 'python3' : 'node';
-    ext = ext || (language === 'py' ? '.py' : '.js');
-    const timeoutSec = Math.ceil(timeoutMs / 1000);
-
-    try {
-        const raw = execFileSync('docker', [
-            'exec', '-i', containerName,
-            'timeout', String(timeoutSec),
-            runtime, `/tmp/agent${ext}`
-        ], {
-            input: fen + '\n',
-            encoding: 'utf-8',
-            timeout: timeoutMs + 2000, // host-side grace period
-            stdio: ['pipe', 'pipe', 'pipe'],
-            maxBuffer: 1024 * 1024,
-        });
-        return String(raw).trim();
-    } catch (e) {
-        // exit 124 = `timeout` command killed it (agent too slow)
-        // exit 137 = OOM killed
-        // e.killed = Node's own timeout fired
-        if (e.killed || e.signal === 'SIGTERM' || e.status === 124) return '__TIMEOUT__';
-        if (e.status === 137) return '__OOM__';
-        const stderr = e.stderr?.toString().slice(0, 300) || '';
-        const stdout = e.stdout?.toString().slice(0, 100) || '';
-        console.error(`[CRASH] ${containerName} exit=${e.status} sig=${e.signal} stderr=${stderr.replace(/\n/g, ' | ')} stdout=${stdout.replace(/\n/g, ' | ')}`);
-        return '__CRASH__';
-    }
-}
-
-/**
- * Stop and remove a Docker container.
- */
 function stopContainer(containerName) {
     try {
-        execFileSync('docker', ['rm', '-f', containerName], {
-            stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000
-        });
+        execFileSync('docker', ['rm', '-f', containerName], { stdio: 'pipe', timeout: 10000 });
     } catch {}
+}
+
+function getAgentMove(containerName, fen, language, ext) {
+    const runtime = language === 'py' ? 'python3' : 'node';
+    return new Promise(resolve => {
+        let stdout = '';
+        let completed = false;
+
+        const child = spawn('docker', [
+            'exec', '-i', containerName,
+            runtime, `/tmp/agent${ext}`,
+        ], { stdio: 'pipe' });
+
+        const timer = setTimeout(() => {
+            if (!completed) { completed = true; child.kill('SIGKILL'); resolve('__TIMEOUT__'); }
+        }, config.agentMoveTimeoutMs);
+
+        child.stdout?.on('data', d => {
+            stdout += d.toString();
+            if (!completed && stdout.includes('\n')) {
+                const m = stdout.match(UCI_MOVE_REGEX);
+                if (m) { completed = true; clearTimeout(timer); child.kill(); resolve(m[0]); }
+            }
+        });
+
+        child.on('exit', code => {
+            if (!completed) {
+                completed = true;
+                clearTimeout(timer);
+                const m = stdout.match(UCI_MOVE_REGEX);
+                if (m) { resolve(m[0]); return; }
+                resolve(code === 137 ? '__OOM__' : '__CRASH__');
+            }
+        });
+
+        child.on('error', () => {
+            if (!completed) { completed = true; clearTimeout(timer); resolve('__CRASH__'); }
+        });
+
+        child.stdin?.write(fen + '\n');
+        child.stdin?.end();
+    });
 }
 
 /**
  * Play a single game between two agents in Docker containers.
- * The chess engine runs on the host for trusted move validation.
+ * Chess validation runs on the host (trusted). Agent code runs isolated.
  *
  * @param {object} opts
- * @param {string} opts.matchId - Unique match identifier
- * @param {string} opts.whiteCode - White agent source code
- * @param {string} opts.whiteLang - "js" or "py"
- * @param {string} opts.whiteName - White agent name
- * @param {string} opts.blackCode - Black agent source code
- * @param {string} opts.blackLang - "js" or "py"
- * @param {string} opts.blackName - Black agent name
- * @param {number} opts.maxPlies - Max plies before draw (default 500)
- * @param {number} opts.moveTimeoutMs - Per-move timeout (default from config)
- * @returns {object} { result, reason, plies, moves, pgn }
+ * @param {string} opts.matchId        - Unique match identifier
+ * @param {string} opts.whiteCode      - White agent source code
+ * @param {string} opts.whiteLang      - "js" or "py"
+ * @param {string} opts.whiteName      - White agent display name
+ * @param {string} opts.blackCode      - Black agent source code
+ * @param {string} opts.blackLang      - "js" or "py"
+ * @param {string} opts.blackName      - Black agent display name
+ * @returns {Promise<{result, reason, plies, pgn, pgnResult}>}
  */
-export function playGame(opts) {
+export async function playGame(opts) {
     const {
         matchId = randomUUID().slice(0, 8),
         whiteCode, whiteLang = 'js', whiteName = 'White',
         blackCode, blackLang = 'js', blackName = 'Black',
-        maxPlies = 500,
-        moveTimeoutMs = config.agentMoveTimeoutMs,
     } = opts;
 
-    // Start containers
-    const white = startContainer(matchId, 'white', whiteCode, whiteLang);
-    const black = startContainer(matchId, 'black', blackCode, blackLang);
+    const wName = `match-${matchId}-white`;
+    const bName = `match-${matchId}-black`;
+    let wExt, bExt;
 
     try {
-        let pos = parseFen(STARTING_FEN);
-        const positionHistory = new Map();
-        const moveLog = [];
+        wExt = startContainer(wName, whiteCode, whiteLang);
+        bExt = startContainer(bName, blackCode, blackLang);
+    } catch (err) {
+        stopContainer(wName);
+        stopContainer(bName);
+        throw err;
+    }
 
-        for (let ply = 0; ply < maxPlies; ply++) {
-            const fen = boardToFen(pos);
-            const isWhiteTurn = pos.side === 'w';
-            const agent = isWhiteTurn ? white : black;
-            const container = agent.containerName;
-            const agentExt = agent.ext;
-            const lang = isWhiteTurn ? whiteLang : blackLang;
-            const sideName = isWhiteTurn ? 'White' : 'Black';
+    const chess = new Chess();
 
-            // Draw checks
-            if (pos.halfmove >= 100) {
-                return buildResult({ result: 'draw', reason: '50-move', plies: ply, moves: moveLog,
-                    whiteName, blackName });
-            }
-            if (insufficientMaterial(pos.board)) {
-                return buildResult({ result: 'draw', reason: 'insufficient', plies: ply, moves: moveLog,
-                    whiteName, blackName });
-            }
-            const boardKey = getBoardKey(pos);
-            const count = (positionHistory.get(boardKey) || 0) + 1;
-            positionHistory.set(boardKey, count);
-            if (count >= 3) {
-                return buildResult({ result: 'draw', reason: 'threefold', plies: ply, moves: moveLog,
-                    whiteName, blackName });
-            }
+    try {
+        while (!chess.isGameOver() && chess.history().length < MAX_PLIES) {
+            const isWhite = chess.turn() === 'w';
+            const containerName = isWhite ? wName : bName;
+            const lang = isWhite ? whiteLang : blackLang;
+            const ext = isWhite ? wExt : bExt;
+            const code = isWhite ? whiteCode : blackCode;
 
-            // Legal moves check (checkmate / stalemate)
-            const legalMoves = generateLegalMoves(pos);
-            if (legalMoves.length === 0) {
-                if (isInCheck(pos.board, pos.side)) {
-                    const winner = isWhiteTurn ? 'black' : 'white';
-                    return buildResult({ result: winner, reason: 'checkmate', plies: ply, moves: moveLog,
-                        whiteName, blackName });
-                }
-                return buildResult({ result: 'draw', reason: 'stalemate', plies: ply, moves: moveLog,
-                    whiteName, blackName });
-            }
+            let uci = await getAgentMove(containerName, chess.fen(), lang, ext);
 
-            // Get move from agent — retry once on crash with fresh container
-            let uci = getAgentMove(container, fen, lang, moveTimeoutMs, agentExt);
-
+            // Retry once on crash/OOM with fresh container
             if (uci === '__CRASH__' || uci === '__OOM__') {
-                // Retry: kill container, start fresh, try again
-                const agentCode = isWhiteTurn ? whiteCode : blackCode;
-                stopContainer(container);
-                const fresh = startContainer(matchId + 'r', isWhiteTurn ? 'white' : 'black', agentCode, lang);
-                if (isWhiteTurn) { Object.assign(white, fresh); } else { Object.assign(black, fresh); }
-                uci = getAgentMove(fresh.containerName, fen, lang, moveTimeoutMs, fresh.ext);
+                stopContainer(containerName);
+                const newExt = startContainer(containerName, code, lang);
+                if (isWhite) wExt = newExt; else bExt = newExt;
+                uci = await getAgentMove(containerName, chess.fen(), lang, newExt);
             }
 
             if (uci === '__TIMEOUT__') {
-                const winner = isWhiteTurn ? 'black' : 'white';
-                return buildResult({ result: winner, reason: 'timeout', plies: ply, moves: moveLog,
-                    whiteName, blackName });
+                return buildResult(chess, whiteName, blackName, isWhite ? '0-1' : '1-0', 'timeout');
             }
             if (uci === '__CRASH__' || uci === '__OOM__') {
-                const winner = isWhiteTurn ? 'black' : 'white';
-                return buildResult({ result: winner, reason: uci === '__OOM__' ? 'oom' : 'crash', plies: ply, moves: moveLog,
-                    whiteName, blackName });
+                return buildResult(chess, whiteName, blackName, isWhite ? '0-1' : '1-0', uci === '__OOM__' ? 'oom' : 'crash');
             }
 
-            // Validate format
-            if (!MOVE_REGEX.test(uci)) {
-                const winner = isWhiteTurn ? 'black' : 'white';
-                return buildResult({ result: winner, reason: 'invalid_format', plies: ply, moves: moveLog,
-                    whiteName, blackName });
-            }
+            let moveResult;
+            try {
+                moveResult = chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] || undefined });
+            } catch { moveResult = null; }
 
-            // Validate legality
-            if (!legalMoves.includes(uci)) {
-                const winner = isWhiteTurn ? 'black' : 'white';
-                return buildResult({ result: winner, reason: 'illegal', plies: ply, moves: moveLog,
-                    whiteName, blackName });
+            if (!moveResult) {
+                return buildResult(chess, whiteName, blackName, isWhite ? '0-1' : '1-0', 'illegal');
             }
-
-            moveLog.push(uci);
-            pos = applyUciMove(pos, uci);
         }
 
-        return buildResult({ result: 'draw', reason: 'max_plies', plies: maxPlies, moves: moveLog,
-            whiteName, blackName });
+        let pgnResult, reason;
+        if (chess.isCheckmate()) {
+            pgnResult = chess.turn() === 'w' ? '0-1' : '1-0'; reason = 'checkmate';
+        } else if (chess.isStalemate()) {
+            pgnResult = '1/2-1/2'; reason = 'stalemate';
+        } else if (chess.isThreefoldRepetition()) {
+            pgnResult = '1/2-1/2'; reason = 'threefold';
+        } else if (chess.isInsufficientMaterial()) {
+            pgnResult = '1/2-1/2'; reason = 'insufficient';
+        } else if (chess.isDraw()) {
+            pgnResult = '1/2-1/2'; reason = '50-move';
+        } else {
+            pgnResult = '1/2-1/2'; reason = 'max_plies';
+        }
 
+        return buildResult(chess, whiteName, blackName, pgnResult, reason);
     } finally {
-        // Always clean up containers
-        stopContainer(white.containerName);
-        stopContainer(black.containerName);
+        stopContainer(wName);
+        stopContainer(bName);
     }
 }
 
-/**
- * Build a result object with PGN.
- */
-function buildResult({ result, reason, plies, moves, whiteName, blackName }) {
-    let pgnResult;
-    if (result === 'white') pgnResult = '1-0';
-    else if (result === 'black') pgnResult = '0-1';
-    else pgnResult = '1/2-1/2';
-
-    const pgn = buildPgnSync({
-        whiteName,
-        blackName,
-        moves,
-        result: pgnResult,
-        reason,
-    }, generateLegalMoves);
-
-    return { result, reason, plies, moves, pgn, pgnResult };
+function buildResult(chess, whiteName, blackName, pgnResult, reason) {
+    const result = pgnResult === '1-0' ? 'white' : pgnResult === '0-1' ? 'black' : 'draw';
+    chess.header('White', whiteName, 'Black', blackName, 'Result', pgnResult, 'Termination', reason);
+    return { result, reason, plies: chess.history().length, pgn: chess.pgn(), pgnResult };
 }
 
 export default { playGame };
