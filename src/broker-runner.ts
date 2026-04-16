@@ -508,6 +508,7 @@ async function sendHeartbeat(): Promise<void> {
 
 const activeJobs = new Set<Promise<void>>();
 let lastCleanup = 0;
+let draining = false;
 let pollBackoffMs = 0;
 const MAX_POLL_BACKOFF_MS = 60_000;
 
@@ -519,6 +520,27 @@ function fireJob(job: any): void {
     activeJobs.delete(p);
   });
   activeJobs.add(p);
+}
+
+async function drain(): Promise<void> {
+  const DRAIN_TIMEOUT_MS = 90_000;
+  const start = Date.now();
+  if (activeJobs.size === 0) {
+    console.log("[Arbiter] Drain complete — no active jobs.");
+    return;
+  }
+  console.log(`[Arbiter] Draining — waiting for ${activeJobs.size} active job(s) to finish (timeout: 90s)...`);
+  while (activeJobs.size > 0 && Date.now() - start < DRAIN_TIMEOUT_MS) {
+    await new Promise(r => setTimeout(r, 1000));
+    if (activeJobs.size > 0) {
+      console.log(`[Arbiter] Draining — ${activeJobs.size} job(s) remaining (${Math.round((Date.now() - start) / 1000)}s elapsed)...`);
+    }
+  }
+  if (activeJobs.size > 0) {
+    console.warn(`[Arbiter] Drain timeout reached — ${activeJobs.size} job(s) still running. Forcing exit.`);
+  } else {
+    console.log("[Arbiter] Drain complete. All jobs finished.");
+  }
 }
 
 async function poll(): Promise<void> {
