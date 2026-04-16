@@ -657,6 +657,15 @@ export async function startBrokerRunner(): Promise<void> {
     lastCleanup = Date.now();
   }
 
+  const shutdown = async (signal: string) => {
+    console.log(`[Arbiter] ${signal} received — entering drain mode.`);
+    draining = true;
+    await drain();
+    process.exit(activeJobs.size > 0 ? 1 : 0);
+  };
+  process.once("SIGTERM", () => { shutdown("SIGTERM").catch(err => { console.error("[Arbiter] Shutdown error:", err); process.exit(1); }); });
+  process.once("SIGINT",  () => { shutdown("SIGINT").catch(err => { console.error("[Arbiter] Shutdown error:", err); process.exit(1); }); });
+
   startedAt = Date.now();
   console.log("[Arbiter] Ready. Polling for matches.");
   poll();
