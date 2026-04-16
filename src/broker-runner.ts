@@ -451,7 +451,26 @@ async function processJob(job: any): Promise<void> {
     const result = await runMatch(
       { path: pathA, language: job.challenger.language, name: job.challenger.name },
       { path: pathB, language: job.defender.language, name: job.defender.name },
-      { games: job.gamesPlanned, matchId: job.matchId }
+      {
+        games: job.gamesPlanned,
+        matchId: job.matchId,
+        onMove: (event) => {
+          signedPost("/api/broker/live-event", {
+            matchId: job.matchId,
+            type: "move",
+            ...event,
+          }).catch(() => {});
+        },
+        onGameComplete: async (round, result, termination) => {
+          signedPost("/api/broker/live-event", {
+            matchId: job.matchId,
+            type: "game_end",
+            gameIndex: round,
+            result,
+            termination,
+          }).catch(() => {});
+        },
+      }
     );
 
     const CLEAN_TERMS = ["checkmate", "stalemate", "threefold", "insufficient", "50-move", "max plies", "draw", "normal", "adjudication", "timeout", "illegal move"];

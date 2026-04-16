@@ -8,6 +8,13 @@ export interface MatchResult {
   pgn: string;
 }
 
+export interface LiveMoveEvent {
+  fen: string;
+  move: string;
+  ply: number;
+  gameIndex: number;
+}
+
 export interface GameResult {
   round: number;
   white: string;
@@ -325,6 +332,7 @@ export async function runMatch(
     games: number;
     matchId?: string;
     onGameComplete?: (round: number, result: string, termination: string) => Promise<void>;
+    onMove?: (event: LiveMoveEvent) => void;
   }
 ): Promise<MatchResult> {
   const results: GameResult[] = [];
@@ -336,7 +344,7 @@ export async function runMatch(
 
     console.log(`  Game ${round}/${options.games}: ${white.name} (W) vs ${black.name} (B)`);
 
-    const gameResult = await runGame(white, black, round, options.matchId);
+    const gameResult = await runGame(white, black, round, options.matchId, options.onMove);
     results.push(gameResult);
     allPgns.push(gameResult.pgn);
 
@@ -356,7 +364,8 @@ async function runGame(
   white: AgentConfig,
   black: AgentConfig,
   round: number,
-  matchId?: string
+  matchId?: string,
+  onMove?: (event: LiveMoveEvent) => void,
 ): Promise<GameResult> {
   const chess = new Chess();
   let termination = "normal";
@@ -412,6 +421,13 @@ async function runGame(
           termination,
           pgn: buildPgn(chess, white.name, black.name, round, loserColor === "w" ? "0-1" : "1-0", termination),
         };
+      }
+
+      // Fire live move event (fire-and-forget — never block gameplay)
+      if (onMove) {
+        try {
+          onMove({ fen: chess.fen(), move, ply: chess.history().length, gameIndex: round });
+        } catch { /* ignore */ }
       }
     }
 
