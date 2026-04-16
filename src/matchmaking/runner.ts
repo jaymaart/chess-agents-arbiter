@@ -1,4 +1,6 @@
-import { spawn, ChildProcess } from "child_process";
+import { spawn, ChildProcess, execFileSync, spawnSync } from "child_process";
+import { readFileSync } from "fs";
+import path from "path";
 import { Chess } from "chess.js";
 
 export interface MatchResult {
@@ -23,11 +25,21 @@ export interface AgentConfig {
 
 const UCI_MOVE_REGEX = /[a-h][1-8][a-h][1-8][qrbn]?/;
 const MAX_PLIES = 500;
-const MOVE_TIMEOUT_MS = 15000;
+const DOCKER_SANDBOX = process.env.DOCKER_SANDBOX === "true";
+const MOVE_TIMEOUT_MS = parseInt(
+  process.env.MOVE_TIMEOUT_MS || (DOCKER_SANDBOX ? "8000" : "15000"),
+  10
+);
+const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || "agentchess-sandbox:latest";
+const AGENT_MEMORY_LIMIT = process.env.AGENT_MEMORY_LIMIT || "256m";
 
 // On Windows, `python3` is not a default alias — only `python` or `py`.
 // On macOS/Linux, `python3` is the canonical name.
 const PYTHON_CMD = process.platform === "win32" ? "python" : "python3";
+
+// ---------------------------------------------------------------------------
+// Bare subprocess engine controller (existing behavior)
+// ---------------------------------------------------------------------------
 
 class EngineController {
   private child: ChildProcess | null = null;
@@ -142,11 +154,176 @@ class EngineController {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Docker sandboxed engine controller
+//
+// One container per agent per game. Container starts with `sleep infinity`,
+// agent code is piped in via `docker exec`, then each move is a `docker exec`
+// call. On crash, restarts the container and retries once before forfeiting.
+//
+// Security flags: --network none, --read-only, --cap-drop ALL, memory/PID
+// limits, tmpfs /tmp. Container runs as non-root (defined in the image).
+// ---------------------------------------------------------------------------
+
+class DockerEngineController {
+  private containerName: string;
+  private config: AgentConfig;
+  private containerStarted = false;
+  private codeWritten = false;
+  private readonly agentPathInContainer: string;
+
+  constructor(config: AgentConfig, matchId: string, side: string) {
+    this.config = config;
+    // Container names: only alphanumeric, hyphens, underscores, dots allowed.
+    const safeId = matchId.replace(/[^a-zA-Z0-9-]/g, "").slice(0, 16);
+    this.containerName = `match-${safeId}-${side}`;
+    this.agentPathInContainer = `/tmp/agent${path.extname(config.path)}`;
+  }
+
+  private startContainer(): void {
+    execFileSync("docker", [
+      "run", "-d",
+      "--name", this.containerName,
+      "--network", "none",
+      "--read-only",
+      "--cap-drop", "ALL",
+      "--memory", AGENT_MEMORY_LIMIT,
+      "--cpus", "0.5",
+      "--pids-limit", "32",
+      "--tmpfs", "/tmp:size=10m,nodev,nosuid",
+      SANDBOX_IMAGE,
+      "sleep", "infinity",
+    ], { stdio: ["pipe", "pipe", "pipe"], timeout: 15000 });
+    this.containerStarted = true;
+  }
+
+  private writeCodeToContainer(): void {
+    const code = readFileSync(this.config.path);
+    const result = spawnSync("docker", [
+      "exec", "-i", this.containerName,
+      "sh", "-c", `cat > ${this.agentPathInContainer}`,
+    ], {
+      input: code,
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 5000,
+    });
+    if (result.status !== 0) {
+      throw new Error(`Failed to write agent code to container: ${result.stderr?.toString().slice(0, 200)}`);
+    }
+    this.codeWritten = true;
+  }
+
+  async getMove(fen: string): Promise<string> {
+    if (!this.containerStarted) this.startContainer();
+    if (!this.codeWritten) this.writeCodeToContainer();
+    return this.execMove(fen, false);
+  }
+
+  private execMove(fen: string, isRetry: boolean): Promise<string> {
+    const runtime = this.config.language === "js" ? "node" : "python3";
+
+    return new Promise((resolve, reject) => {
+      let stdout = "";
+      let stderr = "";
+      let completed = false;
+
+      const child = spawn("docker", [
+        "exec", "-i", this.containerName,
+        runtime, this.agentPathInContainer,
+      ], { stdio: ["pipe", "pipe", "pipe"] });
+
+      const timer = setTimeout(() => {
+        if (!completed) {
+          completed = true;
+          child.kill("SIGKILL");
+          reject(new Error("move timeout"));
+        }
+      }, MOVE_TIMEOUT_MS);
+
+      child.stdout?.on("data", (d: Buffer) => {
+        stdout += d.toString();
+        if (!completed && stdout.includes("\n")) {
+          const m = stdout.match(UCI_MOVE_REGEX);
+          if (m) {
+            completed = true;
+            clearTimeout(timer);
+            child.kill();
+            resolve(m[0]);
+          }
+        }
+      });
+
+      child.stderr?.on("data", (d: Buffer) => {
+        stderr += d.toString();
+      });
+
+      child.on("exit", (code) => {
+        if (!completed) {
+          completed = true;
+          clearTimeout(timer);
+          const m = stdout.match(UCI_MOVE_REGEX);
+          if (m) { resolve(m[0]); return; }
+
+          const err = new Error(`engine exited ${code}: ${stderr.slice(0, 200) || stdout.slice(0, 200) || "(no output)"}`);
+
+          if (!isRetry) {
+            // Restart container and retry once
+            this.stopContainer();
+            try {
+              this.startContainer();
+              this.writeCodeToContainer();
+            } catch {
+              reject(err);
+              return;
+            }
+            this.execMove(fen, true).then(resolve).catch(reject);
+          } else {
+            reject(err);
+          }
+        }
+      });
+
+      child.on("error", (err) => {
+        if (!completed) {
+          completed = true;
+          clearTimeout(timer);
+          reject(new Error(`docker exec error: ${err.message}`));
+        }
+      });
+
+      child.stdin?.write(fen + "\n");
+      child.stdin?.end();
+    });
+  }
+
+  private stopContainer(): void {
+    if (this.containerStarted) {
+      try {
+        execFileSync("docker", ["rm", "-f", this.containerName], {
+          stdio: ["pipe", "pipe", "pipe"],
+          timeout: 10000,
+        });
+      } catch {}
+      this.containerStarted = false;
+      this.codeWritten = false;
+    }
+  }
+
+  stop(): void {
+    this.stopContainer();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Match runner
+// ---------------------------------------------------------------------------
+
 export async function runMatch(
   agentA: AgentConfig,
   agentB: AgentConfig,
   options: {
     games: number;
+    matchId?: string;
     onGameComplete?: (round: number, result: string, termination: string) => Promise<void>;
   }
 ): Promise<MatchResult> {
@@ -159,7 +336,7 @@ export async function runMatch(
 
     console.log(`  Game ${round}/${options.games}: ${white.name} (W) vs ${black.name} (B)`);
 
-    const gameResult = await runGame(white, black, round);
+    const gameResult = await runGame(white, black, round, options.matchId);
     results.push(gameResult);
     allPgns.push(gameResult.pgn);
 
@@ -178,13 +355,19 @@ export async function runMatch(
 async function runGame(
   white: AgentConfig,
   black: AgentConfig,
-  round: number
+  round: number,
+  matchId?: string
 ): Promise<GameResult> {
   const chess = new Chess();
   let termination = "normal";
 
-  const whiteController = new EngineController(white);
-  const blackController = new EngineController(black);
+  const makeController = (agent: AgentConfig, side: string) =>
+    DOCKER_SANDBOX
+      ? new DockerEngineController(agent, matchId || "unknown", `${side}-r${round}`)
+      : new EngineController(agent);
+
+  const whiteController = makeController(white, "w");
+  const blackController = makeController(black, "b");
 
   try {
     while (!chess.isGameOver() && chess.moveNumber() <= MAX_PLIES) {
