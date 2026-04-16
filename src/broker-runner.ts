@@ -80,8 +80,13 @@ function sendLogWS(message: string, level: "info" | "warn" | "error" = "info"): 
   sendLiveWS({ type: "log", message, level });
 }
 
+type WsStatus = "connecting" | "connected" | "disconnected";
+let wsStatus: WsStatus = "connecting";
+
 function connectLiveSocket(): void {
   if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  wsStatus = "connecting";
+  console.log(`${D}[Arbiter] Live WS connecting...${R}`);
   try {
     const url = new URL(WS_URL);
     url.searchParams.set("arbiterId", ARBITER_ID);
@@ -95,8 +100,7 @@ function connectLiveSocket(): void {
 
     ws.on("open", () => {
       liveSocket = ws;
-      // For broker-secret mode, we're immediately ready after auth_ok.
-      // For RSA, we wait for challenge → auth_ok exchange.
+      // For broker-secret mode, ready after auth_ok. For RSA, wait for challenge → auth_ok.
     });
 
     ws.on("message", (raw) => {
@@ -107,6 +111,8 @@ function connectLiveSocket(): void {
           ws.send(JSON.stringify({ type: "auth", signature: sig }));
         } else if (msg.type === "auth_ok") {
           liveSocketReady = true;
+          wsStatus = "connected";
+          console.log(`${G}[Arbiter] Live WS connected.${R}`);
         }
       } catch { /* ignore */ }
     });
@@ -114,13 +120,18 @@ function connectLiveSocket(): void {
     ws.on("close", () => {
       liveSocket = null;
       liveSocketReady = false;
+      wsStatus = "disconnected";
+      console.log(`${Y}[Arbiter] Live WS disconnected — reconnecting in 5s...${R}`);
       wsReconnectTimer = setTimeout(connectLiveSocket, 5000);
     });
 
-    ws.on("error", () => {
+    ws.on("error", (err) => {
+      console.warn(`${Y}[Arbiter] Live WS error: ${err.message}${R}`);
       // close event fires after, triggering reconnect
     });
-  } catch {
+  } catch (err: any) {
+    wsStatus = "disconnected";
+    console.warn(`${Y}[Arbiter] Live WS failed to connect: ${err.message} — retrying in 5s${R}`);
     wsReconnectTimer = setTimeout(connectLiveSocket, 5000);
   }
 }
@@ -337,7 +348,7 @@ function cleanupOrphanContainers(): void {
 // Console banner + stats
 // ---------------------------------------------------------------------------
 
-const G = "\x1b[32m", B = "\x1b[1m", D = "\x1b[2m", R = "\x1b[0m", Y = "\x1b[33m";
+const G = "\x1b[32m", B = "\x1b[1m", D = "\x1b[2m", R = "\x1b[0m", Y = "\x1b[33m", RED = "\x1b[31m";
 
 function printBanner(): void {
   const W = 62;
@@ -364,11 +375,16 @@ function printBanner(): void {
   const wkrDisplay  = `${MAX_CONCURRENT}  (night: ${NIGHT_MAX_CONCURRENT} · ${NIGHT_START_HOUR}:00–${NIGHT_END_HOUR}:00)  ·  cap: ${MAX_SCALE_CAP}`;
   const pollDisplay = `${POLL_INTERVAL_MS}ms` +
     (rateLimitMax < Infinity ? `  ·  rate limit: ${rateLimitMax}/${rateLimitWindowMs / 1000}s` : "");
+  const wsDisplay   = WS_URL.replace(/^wss?:\/\//, "");
 
   console.log(`\n${G}┌${hr}┐${R}`);
   console.log(titleRow);
   console.log(`${G}├${hr}┤${R}`);
   console.log(row("api",         apiDisplay));
+  const wsStatusLabel = wsStatus === "connected" ? `${G}connected${R}`
+    : wsStatus === "connecting" ? `${Y}connecting${R}`
+    : `${RED}disconnected${R}`;
+  console.log(row("live ws",     `${wsStatusLabel}  ${D}${wsDisplay}${R}`));
   console.log(row("auth",        authDisplay));
   console.log(row("sandbox",     sbxDisplay));
   console.log(row("workers",     wkrDisplay));
@@ -824,4 +840,7 @@ export async function startBrokerRunner(): Promise<void> {
 
   // Periodic console stats
   setInterval(logStats, 60_000);
+
+  // Reprint detail box every 5 minutes
+  setInterval(printBanner, 300_000);
 }
