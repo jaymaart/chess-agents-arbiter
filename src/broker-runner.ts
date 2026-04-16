@@ -37,6 +37,11 @@ let dynamicMaxConcurrent = MAX_CONCURRENT; // mutable — adjusted by auto-scale
 // Auto-scaling pressure tracking
 let pressureScore = 0; // positive = busy, negative = idle
 
+// Match throughput counters
+let matchesCompleted = 0;
+let matchesFailed = 0;
+const completionTimestamps: number[] = []; // rolling 60s window for matches/min
+
 // Docker sandbox mode — agents run in isolated containers instead of bare subprocesses.
 const DOCKER_SANDBOX = process.env.DOCKER_SANDBOX === "true";
 
@@ -286,10 +291,29 @@ function autoScale(jobsReturned: number, slotsRequested: number): void {
     pressureScore = Math.max(pressureScore - 0.5, -10);
   }
 
+  // Emergency scale-down if system is critically overloaded (load > 1.5x core count)
+  const load1m = os.loadavg()[0];
+  const cores = os.cpus().length;
+  if (load1m >= cores * 1.5 && dynamicMaxConcurrent > MIN_CONCURRENT) {
+    const next = Math.max(Math.floor(dynamicMaxConcurrent * 0.75), MIN_CONCURRENT);
+    if (next !== dynamicMaxConcurrent) {
+      console.log(`[Arbiter] Emergency scale-down: ${dynamicMaxConcurrent} → ${next} (load=${load1m.toFixed(1)}, cores=${cores})`);
+      dynamicMaxConcurrent = next;
+    }
+    pressureScore = 0;
+    return;
+  }
+
   if (pressureScore >= 3) {
+    // Suppress scale-up if load already near saturation (> 85% of core count)
+    if (load1m >= cores * 0.85) {
+      console.log(`[Arbiter] Auto-scale suppressed: load ${load1m.toFixed(1)} >= ${(cores * 0.85).toFixed(1)} (${cores} cores)`);
+      pressureScore = 0;
+      return;
+    }
     const next = Math.min(Math.ceil(dynamicMaxConcurrent * 1.25), MAX_SCALE_CAP);
     if (next !== dynamicMaxConcurrent) {
-      console.log(`[Arbiter] Auto-scaling up: ${dynamicMaxConcurrent} → ${next} (pressure=${pressureScore.toFixed(1)})`);
+      console.log(`[Arbiter] Auto-scaling up: ${dynamicMaxConcurrent} → ${next} (pressure=${pressureScore.toFixed(1)}, load=${load1m.toFixed(1)})`);
       dynamicMaxConcurrent = next;
     }
     pressureScore = 0;
@@ -361,6 +385,8 @@ async function processJob(job: any): Promise<void> {
         const err = await crashRes.json().catch(() => ({})) as any;
         console.error(`[Arbiter] Failed to report crash for ${job.matchId}: ${err.error || crashRes.status}`);
       }
+      matchesFailed++;
+      completionTimestamps.push(Date.now());
       return;
     }
 
@@ -389,6 +415,8 @@ async function processJob(job: any): Promise<void> {
       const detail = err.details ? ` — ${err.details}` : "";
       console.error(`[Arbiter] Submit failed for ${job.matchId}: ${err.error || submitRes.status}${detail}`);
     } else {
+      matchesCompleted++;
+      completionTimestamps.push(Date.now());
       console.log(`[Arbiter] Match ${job.matchId} complete. Score: ${challengerScore}-${defenderScore}`);
     }
   } finally {
@@ -419,14 +447,24 @@ let startedAt = Date.now();
 
 async function sendHeartbeat(): Promise<void> {
   try {
+    const now = Date.now();
+    const cutoff = now - 60_000;
+    while (completionTimestamps.length && completionTimestamps[0] < cutoff) completionTimestamps.shift();
+
     const body = {
       arbiterId: ARBITER_ID,
       version: ARBITER_VERSION,
       activeJobs: activeJobs.size,
       maxConcurrent: getMaxConcurrent(),
       matchTypes: MATCH_TYPES,
-      uptimeMs: Date.now() - startedAt,
+      uptimeMs: now - startedAt,
       authMode: BROKER_SECRET ? "broker-secret" : "rsa",
+      matchesCompleted,
+      matchesFailed,
+      matchesPerMinute: completionTimestamps.length,
+      pressureScore,
+      osLoad: os.loadavg()[0],
+      memoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
     };
 
     const res = BROKER_SECRET
