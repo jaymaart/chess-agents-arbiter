@@ -542,6 +542,7 @@ async function drain(): Promise<void> {
 }
 
 async function poll(): Promise<void> {
+  if (draining) return;
   const maxNow = getMaxConcurrent();
   const slots = maxNow - activeJobs.size;
 
@@ -612,8 +613,10 @@ async function poll(): Promise<void> {
 
   // Sleep shorter when all slots full (just waiting for a slot to open).
   // Add backoff if server recently rate-limited us.
-  const delay = (activeJobs.size >= maxNow ? 2000 : POLL_INTERVAL_MS) + pollBackoffMs;
-  setTimeout(poll, delay);
+  if (!draining) {
+    const delay = (activeJobs.size >= maxNow ? 2000 : POLL_INTERVAL_MS) + pollBackoffMs;
+    setTimeout(poll, delay);
+  }
 }
 
 export async function startBrokerRunner(): Promise<void> {
