@@ -83,7 +83,7 @@ function getAgentMove(containerName, fen, language, ext) {
             stdout += d.toString();
             if (stdout.includes('\n')) {
                 const m = stdout.match(UCI_MOVE_REGEX);
-                if (m) finish(m[0]);
+                if (m) finish(m[0], 'SIGKILL');
             }
         });
 
