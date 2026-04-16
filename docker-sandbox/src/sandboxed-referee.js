@@ -62,25 +62,28 @@ function getAgentMove(containerName, fen, language, ext) {
             runtime, `/tmp/agent${ext}`,
         ], { stdio: 'pipe' });
 
-        const timer = setTimeout(() => {
-            if (!completed) { completed = true; child.kill('SIGKILL'); resolve('__TIMEOUT__'); }
-        }, config.agentMoveTimeoutMs);
+        const finish = (value, killSignal) => {
+            if (completed) return;
+            completed = true;
+            clearTimeout(timer);
+            child.stdout?.removeAllListeners('data');
+            if (killSignal) child.kill(killSignal);
+            resolve(value);
+        };
+
+        const timer = setTimeout(() => finish('__TIMEOUT__', 'SIGKILL'), config.agentMoveTimeoutMs);
 
         child.stdout?.on('data', d => {
-            if (completed) return;
-            const chunkBytes = Buffer.byteLength(d);
+            const chunkBytes = Buffer.isBuffer(d) ? d.length : Buffer.byteLength(String(d));
             if (stdoutBytes + chunkBytes > MAX_AGENT_STDOUT_BYTES) {
-                completed = true;
-                clearTimeout(timer);
-                child.kill('SIGKILL');
-                resolve('__CRASH__');
+                finish('__CRASH__', 'SIGKILL');
                 return;
             }
             stdoutBytes += chunkBytes;
             stdout += d.toString();
             if (stdout.includes('\n')) {
                 const m = stdout.match(UCI_MOVE_REGEX);
-                if (m) { completed = true; clearTimeout(timer); child.kill(); resolve(m[0]); }
+                if (m) finish(m[0]);
             }
         });
 
@@ -95,7 +98,7 @@ function getAgentMove(containerName, fen, language, ext) {
         });
 
         child.on('error', () => {
-            if (!completed) { completed = true; clearTimeout(timer); resolve('__CRASH__'); }
+            finish('__CRASH__');
         });
 
         child.stdin?.write(fen + '\n');
