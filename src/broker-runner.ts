@@ -4,6 +4,7 @@ import { execSync, execFileSync } from "child_process";
 import http from "http";
 import path from "path";
 import os from "os";
+import crypto from "crypto";
 import { hashData, signData, verifyData, publicKeyFromPrivate, decryptFromServer, normalizePem } from "./crypto";
 import { runMatch } from "./matchmaking/runner";
 import WebSocket from "ws";
@@ -21,7 +22,7 @@ const HEARTBEAT_INTERVAL_MS = parseInt(process.env.HEARTBEAT_INTERVAL_MS || "100
 const DRAIN_TIMEOUT_MS = Math.max(10_000, parseInt(process.env.DRAIN_TIMEOUT_MS || "90000", 10));
 
 // Stable arbiter identity — set ARBITER_ID in env or auto-generate per-process.
-const ARBITER_ID = process.env.ARBITER_ID || `arbiter-${Math.random().toString(36).slice(2, 10)}`;
+const ARBITER_ID = process.env.ARBITER_ID || `arbiter-${crypto.randomUUID().slice(0, 8)}`;
 
 // Concurrency — how many jobs to run in parallel.
 // Night scaling: bump the limit during off-peak hours (crosses midnight correctly).
@@ -83,10 +84,13 @@ function sendLogWS(message: string, level: "info" | "warn" | "error" = "info"): 
 type WsStatus = "connecting" | "connected" | "disconnected";
 let wsStatus: WsStatus = "connecting";
 
+let wsLoggedStatus: string | null = null;
+
 function connectLiveSocket(): void {
   if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
   wsStatus = "connecting";
-  console.log(`${D}[Arbiter] Live WS connecting...${R}`);
+  if (wsLoggedStatus !== "connecting") console.log(`${D}[Arbiter] Live WS connecting...${R}`);
+  wsLoggedStatus = "connecting";
   try {
     const url = new URL(WS_URL);
     url.searchParams.set("arbiterId", ARBITER_ID);
@@ -112,6 +116,7 @@ function connectLiveSocket(): void {
         } else if (msg.type === "auth_ok") {
           liveSocketReady = true;
           wsStatus = "connected";
+          wsLoggedStatus = "connected";
           console.log(`${G}[Arbiter] Live WS connected.${R}`);
         }
       } catch { /* ignore */ }
@@ -121,17 +126,18 @@ function connectLiveSocket(): void {
       liveSocket = null;
       liveSocketReady = false;
       wsStatus = "disconnected";
-      console.log(`${Y}[Arbiter] Live WS disconnected — reconnecting in 5s...${R}`);
+      if (wsLoggedStatus !== "disconnected") console.log(`${Y}[Arbiter] Live WS disconnected — reconnecting...${R}`);
+      wsLoggedStatus = "disconnected";
       wsReconnectTimer = setTimeout(connectLiveSocket, 5000);
     });
 
-    ws.on("error", (err) => {
-      console.warn(`${Y}[Arbiter] Live WS error: ${err.message}${R}`);
+    ws.on("error", () => {
       // close event fires after, triggering reconnect
     });
   } catch (err: any) {
-    wsStatus = "disconnected";
-    console.warn(`${Y}[Arbiter] Live WS failed to connect: ${err.message} — retrying in 5s${R}`);
+    wsStatus = "disconnected" as WsStatus;
+    if (wsLoggedStatus !== "disconnected") console.warn(`${Y}[Arbiter] Live WS failed to connect — retrying${R}`);
+    wsLoggedStatus = "disconnected";
     wsReconnectTimer = setTimeout(connectLiveSocket, 5000);
   }
 }
