@@ -14,6 +14,7 @@ import config from './config.js';
 
 const UCI_MOVE_REGEX = /[a-h][1-8][a-h][1-8][qrbn]?/;
 const MAX_PLIES = 500;
+const MAX_AGENT_STDOUT_BYTES = 64 * 1024;
 
 function detectExt(code, language) {
     if (language === 'py') return '.py';
@@ -53,6 +54,7 @@ function getAgentMove(containerName, fen, language, ext) {
     const runtime = language === 'py' ? 'python3' : 'node';
     return new Promise(resolve => {
         let stdout = '';
+        let stdoutBytes = 0;
         let completed = false;
 
         const child = spawn('docker', [
@@ -65,6 +67,14 @@ function getAgentMove(containerName, fen, language, ext) {
         }, config.agentMoveTimeoutMs);
 
         child.stdout?.on('data', d => {
+            stdoutBytes += d.length;
+            if (!completed && stdoutBytes > MAX_AGENT_STDOUT_BYTES) {
+                completed = true;
+                clearTimeout(timer);
+                child.kill('SIGKILL');
+                resolve('__CRASH__');
+                return;
+            }
             stdout += d.toString();
             if (!completed && stdout.includes('\n')) {
                 const m = stdout.match(UCI_MOVE_REGEX);
