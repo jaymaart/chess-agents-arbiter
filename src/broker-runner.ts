@@ -6,6 +6,7 @@ import path from "path";
 import os from "os";
 import { hashData, signData, verifyData, publicKeyFromPrivate, decryptFromServer, normalizePem } from "./crypto";
 import { runMatch } from "./matchmaking/runner";
+import WebSocket from "ws";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const ARBITER_VERSION: string = require("../package.json").version;
@@ -59,6 +60,70 @@ const MATCH_TYPES: string[] | null = process.env.MATCH_TYPES
 // Priority queue — hot-reloadable, no restart needed.
 // Format: player_name  OR  player_name|expires_epoch_ms
 const PRIORITY_FILE = process.env.PRIORITY_FILE || path.join(process.cwd(), "priority.txt");
+
+// ---------------------------------------------------------------------------
+// Live WebSocket connection — streams move events + logs to API in real time
+// ---------------------------------------------------------------------------
+
+const WS_URL = API_URL.replace(/^http/, "ws") + "/ws/arbiter";
+let liveSocket: WebSocket | null = null;
+let liveSocketReady = false;
+let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+function sendLiveWS(data: object): void {
+  if (liveSocketReady && liveSocket?.readyState === WebSocket.OPEN) {
+    try { liveSocket.send(JSON.stringify(data)); } catch { /* ignore */ }
+  }
+}
+
+function sendLogWS(message: string, level: "info" | "warn" | "error" = "info"): void {
+  sendLiveWS({ type: "log", message, level });
+}
+
+function connectLiveSocket(): void {
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  try {
+    const url = new URL(WS_URL);
+    url.searchParams.set("arbiterId", ARBITER_ID);
+    if (BROKER_SECRET) {
+      url.searchParams.set("token", BROKER_SECRET);
+    } else if (WORKER_PUBLIC_KEY) {
+      url.searchParams.set("pubkey", WORKER_PUBLIC_KEY);
+    }
+
+    const ws = new WebSocket(url.toString());
+
+    ws.on("open", () => {
+      liveSocket = ws;
+      // For broker-secret mode, we're immediately ready after auth_ok.
+      // For RSA, we wait for challenge → auth_ok exchange.
+    });
+
+    ws.on("message", (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === "challenge" && WORKER_PRIVATE_KEY) {
+          const sig = signData(`ws-auth:${msg.nonce}`, WORKER_PRIVATE_KEY);
+          ws.send(JSON.stringify({ type: "auth", signature: sig }));
+        } else if (msg.type === "auth_ok") {
+          liveSocketReady = true;
+        }
+      } catch { /* ignore */ }
+    });
+
+    ws.on("close", () => {
+      liveSocket = null;
+      liveSocketReady = false;
+      wsReconnectTimer = setTimeout(connectLiveSocket, 5000);
+    });
+
+    ws.on("error", () => {
+      // close event fires after, triggering reconnect
+    });
+  } catch {
+    wsReconnectTimer = setTimeout(connectLiveSocket, 5000);
+  }
+}
 
 // Soft rate limit: RATE_LIMIT="100/10s" means at most 100 requests per 10-second window.
 let rateLimitMax = Infinity;
@@ -420,6 +485,7 @@ function autoScale(jobsReturned: number, slotsRequested: number): void {
 
 async function processJob(job: any): Promise<void> {
   console.log(`[Arbiter] Running match ${job.matchId}...`);
+  sendLogWS(`Running match ${job.matchId}...`);
 
   const valid = await verifyJobIntegrity(job);
   if (!valid) {
@@ -455,20 +521,10 @@ async function processJob(job: any): Promise<void> {
         games: job.gamesPlanned,
         matchId: job.matchId,
         onMove: (event) => {
-          signedPost("/api/broker/live-event", {
-            matchId: job.matchId,
-            type: "move",
-            ...event,
-          }).catch(() => {});
+          sendLiveWS({ type: "live-event", matchId: job.matchId, eventType: "move", ...event });
         },
         onGameComplete: async (round, result, termination) => {
-          signedPost("/api/broker/live-event", {
-            matchId: job.matchId,
-            type: "game_end",
-            gameIndex: round,
-            result,
-            termination,
-          }).catch(() => {});
+          sendLiveWS({ type: "live-event", matchId: job.matchId, eventType: "game_end", gameIndex: round, result, termination });
         },
       }
     );
@@ -524,6 +580,7 @@ async function processJob(job: any): Promise<void> {
       matchesCompleted++;
       completionTimestamps.push(Date.now());
       console.log(`[Arbiter] Match ${job.matchId} complete. Score: ${challengerScore}-${defenderScore}`);
+      sendLogWS(`Match ${job.matchId} complete. Score: ${challengerScore}-${defenderScore}`);
     }
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
@@ -740,6 +797,7 @@ export async function startBrokerRunner(): Promise<void> {
   printBanner();
 
   await fetchServerPublicKey();
+  connectLiveSocket();
   await checkForUpdate();
 
   if (DOCKER_SANDBOX) {
