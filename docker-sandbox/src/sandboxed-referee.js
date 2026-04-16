@@ -15,6 +15,9 @@ import config from './config.js';
 const UCI_MOVE_REGEX = /[a-h][1-8][a-h][1-8][qrbn]?/;
 const MAX_PLIES = 500;
 const MAX_AGENT_STDOUT_BYTES = 64 * 1024;
+const EXEC_EXIT_GRACE_MS = 250;
+const HOST_TIMEOUT_BUFFER_MS = 1500;
+const FALLBACK_MATCH_ID_LENGTH = 16;
 
 function detectExt(code, language) {
     if (language === 'py') return '.py';
@@ -86,6 +89,7 @@ async function stopContainer(containerName) {
 
 function getAgentMove(containerName, fen, language, ext) {
     const runtime = language === 'py' ? 'python3' : 'node';
+    const safeExt = ext === '.py' || ext === '.js' || ext === '.mjs' ? ext : '.mjs';
     return new Promise(resolve => {
         let stdout = '';
         let stdoutBytes = 0;
@@ -95,7 +99,7 @@ function getAgentMove(containerName, fen, language, ext) {
 
         const child = spawn('docker', [
             'exec', '-i', containerName,
-            'sh', '-lc', `timeout -k 1s ${(config.agentMoveTimeoutMs / 1000).toFixed(3)}s ${runtime} /tmp/agent${ext}`,
+            'sh', '-lc', `timeout -k 1s ${(config.agentMoveTimeoutMs / 1000).toFixed(3)}s ${runtime} /tmp/agent${safeExt}`,
         ], { stdio: 'pipe' });
 
         const finish = (value) => {
@@ -111,10 +115,10 @@ function getAgentMove(containerName, fen, language, ext) {
             pendingResult = value;
             child.stdout?.removeAllListeners('data');
             child.kill(signal);
-            exitGraceTimer = setTimeout(() => finish(value), 250);
+            exitGraceTimer = setTimeout(() => finish(value), EXEC_EXIT_GRACE_MS);
         };
 
-        const timer = setTimeout(() => requestExitAndResolve('__TIMEOUT__', 'SIGKILL'), config.agentMoveTimeoutMs + 1500);
+        const timer = setTimeout(() => requestExitAndResolve('__TIMEOUT__', 'SIGKILL'), config.agentMoveTimeoutMs + HOST_TIMEOUT_BUFFER_MS);
 
         child.stdout?.on('data', d => {
             if (done || pendingResult !== null) return;
@@ -172,7 +176,7 @@ export async function playGame(opts) {
         .toLowerCase()
         .replace(/[^a-z0-9_.-]/g, '-')
         .replace(/^[^a-z0-9]+/, '')
-        .slice(0, 40) || randomUUID().slice(0, 8);
+        .slice(0, 40) || randomUUID().replace(/-/g, '').slice(0, FALLBACK_MATCH_ID_LENGTH);
     const wName = `match-${safeMatchId}-white`;
     const bName = `match-${safeMatchId}-black`;
     let wExt, bExt;
