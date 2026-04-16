@@ -74,13 +74,15 @@ function getAgentMove(containerName, fen, language, ext) {
         const timer = setTimeout(() => finish('__TIMEOUT__', 'SIGKILL'), config.agentMoveTimeoutMs);
 
         child.stdout?.on('data', d => {
-            const chunkBytes = Buffer.isBuffer(d) ? d.length : Buffer.byteLength(String(d));
+            if (completed) return;
+            const chunk = Buffer.isBuffer(d) ? d : Buffer.from(String(d));
+            const chunkBytes = chunk.length;
             if (stdoutBytes + chunkBytes > MAX_AGENT_STDOUT_BYTES) {
                 finish('__CRASH__', 'SIGKILL');
                 return;
             }
             stdoutBytes += chunkBytes;
-            stdout += d.toString();
+            stdout += chunk.toString();
             if (stdout.includes('\n')) {
                 const m = stdout.match(UCI_MOVE_REGEX);
                 if (m) finish(m[0], 'SIGKILL');
