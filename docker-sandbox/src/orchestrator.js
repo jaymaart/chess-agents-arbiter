@@ -7,15 +7,10 @@
 // =============================================================================
 
 import { execSync, execFileSync } from 'node:child_process';
-import { Worker } from 'node:worker_threads';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { readFileSync, existsSync } from 'node:fs';
 import { fetchJobs, submitResult, reportCrash, verifyJobIntegrity, initServerPublicKey } from './api-client.js';
+import { playGame } from './sandboxed-referee.js';
 import config from './config.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const WORKER_PATH = join(__dirname, 'game-worker.js');
 
 let running = true;
 let activeGames = 0;
@@ -38,26 +33,6 @@ function log(msg) {
 function logError(msg, err) {
     const ts = new Date().toISOString().slice(11, 23);
     console.error(`[${ts}] ERROR: ${msg}`, err?.message || '');
-}
-
-/**
- * Run a single game in a worker thread with a hard timeout.
- * Prevents blocking the main event loop.
- */
-function runGameInWorker(opts) {
-    return new Promise((resolve, reject) => {
-        const worker = new Worker(WORKER_PATH, { workerData: opts });
-        worker.on('message', (msg) => {
-            if (msg.ok) resolve(msg.result);
-            else reject(new Error(msg.error));
-        });
-        worker.on('error', (err) => {
-            reject(err);
-        });
-        worker.on('exit', (code) => {
-            if (code !== 0) reject(new Error(`Worker exited with code ${code}`));
-        });
-    });
 }
 
 /**
@@ -142,7 +117,7 @@ async function processJob(job) {
         const blackName = swap ? challenger.name : defender.name;
 
         try {
-            const result = await runGameInWorker({
+            const result = await playGame({
                 matchId: `${matchId.slice(0, 8)}-g${g}`,
                 whiteCode,
                 whiteLang,
@@ -243,10 +218,9 @@ export async function runLoop() {
 
     function getMaxConcurrent() {
         const hour = new Date().getHours();
-        if (hour >= config.nightStartHour && hour < config.nightEndHour) {
-            return config.nightMaxConcurrent;
-        }
-        return config.maxConcurrentMatches;
+        const s = config.nightStartHour, e = config.nightEndHour;
+        const isNight = s < e ? (hour >= s && hour < e) : (hour >= s || hour < e);
+        return isNight ? config.nightMaxConcurrent : config.maxConcurrentMatches;
     }
 
     // Continuously keep MAX_CONCURRENT jobs running
