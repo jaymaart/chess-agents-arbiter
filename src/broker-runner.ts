@@ -531,7 +531,7 @@ async function drain(): Promise<void> {
     console.log("[Arbiter] Drain complete — no active jobs.");
     return;
   }
-  console.log(`[Arbiter] Draining — waiting for ${activeJobs.size} active job(s) to finish (timeout: 90s)...`);
+  console.log(`[Arbiter] Draining — waiting for ${activeJobs.size} active job(s) to finish (timeout: ${Math.round(DRAIN_TIMEOUT_MS / 1000)}s)...`);
   while (activeJobs.size > 0 && Date.now() - start < DRAIN_TIMEOUT_MS) {
     await new Promise(r => setTimeout(r, 1000));
     console.log(`[Arbiter] Draining — ${activeJobs.size} job(s) remaining (${Math.round((Date.now() - start) / 1000)}s elapsed)...`);
