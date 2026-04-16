@@ -305,15 +305,23 @@ function autoScale(jobsReturned: number, slotsRequested: number): void {
   }
 
   if (pressureScore >= 3) {
-    // Suppress scale-up if load already near saturation (> 85% of core count)
+    // Suppress scale-up if local load is near saturation (> 85% of core count)
     if (load1m >= cores * 0.85) {
       console.log(`[Arbiter] Auto-scale suppressed: load ${load1m.toFixed(1)} >= ${(cores * 0.85).toFixed(1)} (${cores} cores)`);
       pressureScore = 0;
       return;
     }
+    // Suppress scale-up if host siblings are already using >= 80% of total host capacity.
+    // This prevents multi-replica deployments from collectively over-subscribing one machine.
+    const hostUtil = lastHostCapacity > 0 ? lastHostActiveJobs / lastHostCapacity : 0;
+    if (hostUtil >= 0.8) {
+      console.log(`[Arbiter] Auto-scale suppressed: host utilization ${(hostUtil * 100).toFixed(0)}% (${lastHostActiveJobs}/${lastHostCapacity} across all replicas)`);
+      pressureScore = 0;
+      return;
+    }
     const next = Math.min(Math.ceil(dynamicMaxConcurrent * 1.25), MAX_SCALE_CAP);
     if (next !== dynamicMaxConcurrent) {
-      console.log(`[Arbiter] Auto-scaling up: ${dynamicMaxConcurrent} → ${next} (pressure=${pressureScore.toFixed(1)}, load=${load1m.toFixed(1)})`);
+      console.log(`[Arbiter] Auto-scaling up: ${dynamicMaxConcurrent} → ${next} (pressure=${pressureScore.toFixed(1)}, load=${load1m.toFixed(1)}, host=${(hostUtil * 100).toFixed(0)}%)`);
       dynamicMaxConcurrent = next;
     }
     pressureScore = 0;
@@ -444,6 +452,9 @@ function pollRequests(count: number): Array<Record<string, unknown>> {
 }
 
 let startedAt = Date.now();
+// Host-level aggregate from last heartbeat response — prevents multi-replica over-scaling
+let lastHostActiveJobs = 0;
+let lastHostCapacity = 0;
 
 async function sendHeartbeat(): Promise<void> {
   try {
@@ -453,6 +464,7 @@ async function sendHeartbeat(): Promise<void> {
 
     const body = {
       arbiterId: ARBITER_ID,
+      hostname: os.hostname(),
       version: ARBITER_VERSION,
       activeJobs: activeJobs.size,
       maxConcurrent: getMaxConcurrent(),
@@ -481,7 +493,12 @@ async function sendHeartbeat(): Promise<void> {
         const clamped = Math.max(MIN_CONCURRENT, Math.min(data.scaleTarget, MAX_SCALE_CAP));
         console.log(`[Arbiter] Admin scale command: ${dynamicMaxConcurrent} → ${clamped}`);
         dynamicMaxConcurrent = clamped;
-        pressureScore = 0; // reset pressure after admin override
+        pressureScore = 0;
+      }
+      // Store host-level utilization for the auto-scaler to use
+      if (typeof data.hostActiveJobs === "number" && typeof data.hostCapacity === "number") {
+        lastHostActiveJobs = data.hostActiveJobs;
+        lastHostCapacity = data.hostCapacity;
       }
     }
   } catch {
