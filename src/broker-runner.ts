@@ -269,6 +269,67 @@ function cleanupOrphanContainers(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Console banner + stats
+// ---------------------------------------------------------------------------
+
+const G = "\x1b[32m", B = "\x1b[1m", D = "\x1b[2m", R = "\x1b[0m", Y = "\x1b[33m";
+
+function printBanner(): void {
+  const W = 62;
+  const hr = "─".repeat(W);
+
+  const row = (label: string, value: string): string => {
+    const lbl = label.padEnd(12);
+    const pad = " ".repeat(Math.max(0, W - 2 - lbl.length - value.length));
+    return `${G}│${R} ${D}${lbl}${R}${value}${pad} ${G}│${R}`;
+  };
+
+  const titleText = "♟  Chess Agents Arbiter";
+  const verText   = `v${ARBITER_VERSION}`;
+  const titlePad  = " ".repeat(Math.max(0, W - 2 - titleText.length - verText.length));
+  const titleRow  = `${G}│${R} ${B}${G}${titleText}${R}${titlePad}${D}${verText}${R} ${G}│${R}`;
+
+  const apiDisplay  = API_URL.replace(/^https?:\/\//, "");
+  const authDisplay = BROKER_SECRET ? "broker-secret" : `rsa · ${WORKER_PUBLIC_KEY.slice(27, 55)}…`;
+  const sbxDisplay  = DOCKER_SANDBOX
+    ? `docker  (${process.env.SANDBOX_IMAGE || "agentchess-sandbox:latest"})`
+    : "bare subprocess";
+  const wkrDisplay  = `${MAX_CONCURRENT}  (night: ${NIGHT_MAX_CONCURRENT} · ${NIGHT_START_HOUR}:00–${NIGHT_END_HOUR}:00)  ·  cap: ${MAX_SCALE_CAP}`;
+  const pollDisplay = `${POLL_INTERVAL_MS}ms` +
+    (rateLimitMax < Infinity ? `  ·  rate limit: ${rateLimitMax}/${rateLimitWindowMs / 1000}s` : "");
+
+  console.log(`\n${G}┌${hr}┐${R}`);
+  console.log(titleRow);
+  console.log(`${G}├${hr}┤${R}`);
+  console.log(row("api",         apiDisplay));
+  console.log(row("auth",        authDisplay));
+  console.log(row("sandbox",     sbxDisplay));
+  console.log(row("workers",     wkrDisplay));
+  console.log(row("poll",        pollDisplay));
+  console.log(row("types",       MATCH_TYPES ? MATCH_TYPES.join(", ") : "all"));
+  console.log(row("auto-update", AUTO_UPDATE ? `${Y}enabled${R}` : "disabled"));
+  console.log(`${G}└${hr}┘${R}\n`);
+}
+
+function logStats(): void {
+  const now = Date.now();
+  const cutoff = now - 60_000;
+  const rpm = completionTimestamps.filter(t => t >= cutoff).length;
+  const load = os.loadavg()[0].toFixed(1);
+  const upMins = Math.floor((now - startedAt) / 60_000);
+  const upStr = upMins >= 60
+    ? `${Math.floor(upMins / 60)}h${upMins % 60}m`
+    : `${upMins}m`;
+  const maxNow = getMaxConcurrent();
+  console.log(
+    `${D}[Arbiter]${R} ${G}${activeJobs.size}${R}/${maxNow} active` +
+    `  ·  ${G}${matchesCompleted}${R} done  ·  ${matchesFailed > 0 ? Y : D}${matchesFailed}${R} failed` +
+    `  ·  ${rpm}/min  ·  load ${load}  ·  up ${upStr}` +
+    (pollBackoffMs > 0 ? `  ·  ${Y}backoff ${pollBackoffMs / 1000}s${R}` : "")
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Night scaling
 // ---------------------------------------------------------------------------
 
@@ -648,17 +709,7 @@ export async function startBrokerRunner(): Promise<void> {
     }
   }
 
-  console.log("[Arbiter] Starting...");
-  console.log(`[Arbiter] API: ${API_URL}`);
-  console.log(`[Arbiter] Auth: ${BROKER_SECRET ? "broker-secret" : `rsa:${WORKER_PUBLIC_KEY.slice(27, 60)}...`}`);
-  console.log(
-    `[Arbiter] Concurrency: ${MAX_CONCURRENT} (night: ${NIGHT_MAX_CONCURRENT}, ${NIGHT_START_HOUR}:00–${NIGHT_END_HOUR}:00)` +
-    ` | Poll: ${POLL_INTERVAL_MS}ms` +
-    (DOCKER_SANDBOX ? ` | Sandbox: Docker (${process.env.SANDBOX_IMAGE || "agentchess-sandbox:latest"})` : " | Sandbox: bare subprocess") +
-    (rateLimitMax < Infinity ? ` | Rate limit: ${rateLimitMax}/${rateLimitWindowMs / 1000}s` : "") +
-    (MATCH_TYPES ? ` | Match types: ${MATCH_TYPES.join(", ")}` : "") +
-    (AUTO_UPDATE ? ` | Auto-update: enabled` : "")
-  );
+  printBanner();
 
   await fetchServerPublicKey();
   await checkForUpdate();
@@ -684,4 +735,7 @@ export async function startBrokerRunner(): Promise<void> {
   // Heartbeat loop — reports stats to API and picks up admin scale commands
   sendHeartbeat();
   setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+
+  // Periodic console stats
+  setInterval(logStats, 60_000);
 }
