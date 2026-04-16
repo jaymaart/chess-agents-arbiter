@@ -11,7 +11,7 @@ import { runMatch } from "./matchmaking/runner";
 const ARBITER_VERSION: string = require("../package.json").version;
 
 const API_URL = (process.env.API_URL || "https://chess-agents-api-production.up.railway.app").replace(/\/$/, "");
-const WORKER_PRIVATE_KEY = normalizePem(process.env.WORKER_PRIVATE_KEY || "");
+const WORKER_PRIVATE_KEY = process.env.WORKER_PRIVATE_KEY ? normalizePem(process.env.WORKER_PRIVATE_KEY) : "";
 const BROKER_SECRET = process.env.BROKER_SECRET || "";
 let WORKER_PUBLIC_KEY = "";
 
