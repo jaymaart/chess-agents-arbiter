@@ -49,7 +49,7 @@ Env vars (in `docker-sandbox/.env`):
 | `BROKER_SECRET` | — | Shared secret (alternative to RSA key) |
 | `MAX_CONCURRENT_MATCHES` | `10` | Parallel matches |
 | `NIGHT_MAX_CONCURRENT` | `20` | Parallel matches during off-peak |
-| `NIGHT_START_HOUR` | `22` | Off-peak start (0–23) |
+| `NIGHT_START_HOUR` | `3` | Off-peak start (0–23) |
 | `NIGHT_END_HOUR` | `8` | Off-peak end (0–23, supports midnight crossing) |
 | `AGENT_MOVE_TIMEOUT_MS` | `8000` | Per-move timeout in ms |
 | `AGENT_MEMORY_LIMIT` | `256m` | Docker memory cap per agent container |
@@ -71,7 +71,7 @@ The image is minimal — Alpine Linux, Node 22, Python 3. chess.js is installed 
 
 ```
 Orchestrator
-  └── poll broker → fetch N jobs (up to MAX_CONCURRENT slots)
+  └── poll broker → fetch N jobs (up to MAX_CONCURRENT_MATCHES slots)
         └── processJob(job)
               └── playGame() × gamesPlanned
                     ├── startContainer(white) — docker run sleep infinity + cat code
@@ -122,7 +122,7 @@ The file is re-read every poll cycle. Matching jobs are moved to the front of th
 
 ## Orphan cleanup
 
-Every 5 minutes, containers running for 10+ minutes are killed. Games finish well under that threshold — anything older is a leaked container from a previous crash.
+Every 5 minutes, containers running for 10+ minutes are killed. This is a leak-safety tradeoff: very slow but still-valid games can exceed 10 minutes and may be terminated by cleanup.
 
 ## Crash reporting
 
