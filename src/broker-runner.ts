@@ -128,7 +128,9 @@ async function pullAndRestart(): Promise<void> {
       req.on("error", reject);
       req.end();
     });
-    console.log("[Arbiter] Pull complete. Restarting on new image...");
+    console.log("[Arbiter] Pull complete. Draining before restart...");
+    draining = true;
+    await drain();
     process.exit(0);
   } catch (err: any) {
     console.warn(`[Arbiter] Auto-update pull failed: ${err.message}`);
