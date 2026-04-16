@@ -1,0 +1,25 @@
+# =============================================================================
+# AgentChess Sandbox — Minimal dual-runtime container for untrusted agents
+# Supports both Node.js and Python chess agents
+# =============================================================================
+
+FROM node:22-alpine
+
+# Add Python 3 runtime
+RUN apk --no-cache add python3 coreutils && \
+    rm -rf /var/cache/apk/*
+
+# Install chess.js globally so agents can require('chess.js')
+RUN npm install -g chess.js && \
+    rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
+# Set NODE_PATH so global modules are found by require()
+ENV NODE_PATH=/usr/local/lib/node_modules
+
+# Create non-root user
+RUN adduser -D -s /bin/sh agent
+
+USER agent
+WORKDIR /tmp
+
+# No entrypoint — container runs `sleep infinity` and we `docker exec` into it

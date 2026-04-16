@@ -1,4 +1,6 @@
 import fs from "fs/promises";
+import { existsSync, readFileSync } from "fs";
+import { execSync, execFileSync } from "child_process";
 import http from "http";
 import path from "path";
 import os from "os";
@@ -12,8 +14,17 @@ const API_URL = (process.env.API_URL || "https://chess-agents-api-production.up.
 const WORKER_PRIVATE_KEY = normalizePem(process.env.WORKER_PRIVATE_KEY || "");
 let WORKER_PUBLIC_KEY = "";
 
-const POLL_INTERVAL_MS = Math.max(120_000, parseInt(process.env.POLL_INTERVAL_MS || "120000", 10));
-const POLL_COUNT = Math.max(1, Math.min(50, parseInt(process.env.POLL_COUNT || "10", 10)));
+const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || "5000", 10);
+
+// Concurrency — how many jobs to run in parallel.
+// Night scaling: bump the limit during off-peak hours (crosses midnight correctly).
+const MAX_CONCURRENT = Math.max(1, parseInt(process.env.MAX_CONCURRENT || "10", 10));
+const NIGHT_MAX_CONCURRENT = Math.max(1, parseInt(process.env.NIGHT_MAX_CONCURRENT || "20", 10));
+const NIGHT_START_HOUR = parseInt(process.env.NIGHT_START_HOUR || "22", 10);
+const NIGHT_END_HOUR = parseInt(process.env.NIGHT_END_HOUR || "8", 10);
+
+// Docker sandbox mode — agents run in isolated containers instead of bare subprocesses.
+const DOCKER_SANDBOX = process.env.DOCKER_SANDBOX === "true";
 
 // Auto-update: disabled by default. Set AUTO_UPDATE=true to enable.
 // Requires /var/run/docker.sock mounted (-v /var/run/docker.sock:/var/run/docker.sock).
@@ -25,8 +36,11 @@ const MATCH_TYPES: string[] | null = process.env.MATCH_TYPES
   ? process.env.MATCH_TYPES.split(",").map(s => s.trim()).filter(Boolean)
   : null;
 
+// Priority queue — hot-reloadable, no restart needed.
+// Format: player_name  OR  player_name|expires_epoch_ms
+const PRIORITY_FILE = process.env.PRIORITY_FILE || path.join(process.cwd(), "priority.txt");
+
 // Soft rate limit: RATE_LIMIT="100/10s" means at most 100 requests per 10-second window.
-// If exceeded, the poll is skipped (not errored) until the window clears.
 let rateLimitMax = Infinity;
 let rateLimitWindowMs = 10_000;
 const pollTimestamps: number[] = [];
@@ -42,7 +56,6 @@ if (process.env.RATE_LIMIT) {
 function withinRateLimit(): boolean {
   const now = Date.now();
   const cutoff = now - rateLimitWindowMs;
-  // Evict timestamps outside the window
   while (pollTimestamps.length && pollTimestamps[0] < cutoff) pollTimestamps.shift();
   if (pollTimestamps.length >= rateLimitMax) return false;
   pollTimestamps.push(now);
@@ -155,26 +168,88 @@ async function signedPost(endpoint: string, body: object): Promise<Response> {
 }
 
 async function verifyJobIntegrity(job: any): Promise<boolean> {
-  // Engine code is obfuscated in transit — we verify the server's Ed25519 signature
-  // which covers (matchId + challengerHash + defenderHash) using the original source hashes.
-  // This proves the payload was built by the server and the hashes haven't been swapped.
   const signingString = job.matchId + job.challengerHash + job.defenderHash;
   if (!verifyData(signingString, job.serverSignature, serverPublicKey)) {
     console.error(`[Arbiter] Server signature invalid for match ${job.matchId} — rejecting.`);
     return false;
   }
-
   return true;
 }
 
-// Detect whether JS code uses ES module syntax so we can assign the right
-// extension. .mjs forces ESM, .cjs forces CommonJS — Node respects both
-// regardless of any parent package.json "type" field.
 function jsExt(code: string): ".mjs" | ".cjs" {
   return /\bimport\s*[\(\{"'`]|\bexport\s+(default\b|\{|const\b|function\b|class\b|async\b)/.test(code)
     ? ".mjs"
     : ".cjs";
 }
+
+// ---------------------------------------------------------------------------
+// Priority queue — reads priority.txt on every poll tick (hot-reloadable).
+// Returns the priority player name, or null if none/expired.
+// ---------------------------------------------------------------------------
+
+function getPriority(): string | null {
+  try {
+    if (!existsSync(PRIORITY_FILE)) return null;
+    const raw = readFileSync(PRIORITY_FILE, "utf-8").trim();
+    if (!raw || raw.startsWith("#")) return null;
+    const [name, expiresStr] = raw.split("|");
+    if (expiresStr && Date.now() > parseInt(expiresStr, 10)) return null;
+    return name.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Orphan container cleanup — only runs when DOCKER_SANDBOX=true.
+// Kills match containers that have been running >= 10 minutes (stuck/orphaned).
+// ---------------------------------------------------------------------------
+
+function cleanupOrphanContainers(): void {
+  if (!DOCKER_SANDBOX) return;
+  try {
+    const output = execSync(
+      'docker ps -a --filter "name=match-" --format "{{.Names}} {{.Status}}"',
+      { encoding: "utf-8", timeout: 5000 }
+    ).trim();
+    if (!output) return;
+
+    for (const line of output.split("\n")) {
+      const spaceIdx = line.indexOf(" ");
+      if (spaceIdx < 0) continue;
+      const name = line.slice(0, spaceIdx);
+      const status = line.slice(spaceIdx + 1);
+
+      const minutesMatch = status.match(/Up (\d+) minutes?/);
+      const isOrphaned = status.includes("hour") || status.includes("day") ||
+        (minutesMatch !== null && parseInt(minutesMatch[1], 10) >= 10);
+
+      if (isOrphaned) {
+        console.log(`[Arbiter] Cleaning orphaned container: ${name}`);
+        try { execFileSync("docker", ["rm", "-f", name], { stdio: "pipe", timeout: 5000 }); } catch {}
+      } else if (status.includes("Exited")) {
+        try { execFileSync("docker", ["rm", name], { stdio: "pipe", timeout: 5000 }); } catch {}
+      }
+    }
+  } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Night scaling
+// ---------------------------------------------------------------------------
+
+function getMaxConcurrent(): number {
+  const hour = new Date().getHours();
+  // Handles ranges that cross midnight (e.g. 22–8)
+  const isNight = NIGHT_START_HOUR > NIGHT_END_HOUR
+    ? (hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR)
+    : (hour >= NIGHT_START_HOUR && hour < NIGHT_END_HOUR);
+  return isNight ? NIGHT_MAX_CONCURRENT : MAX_CONCURRENT;
+}
+
+// ---------------------------------------------------------------------------
+// Job processing
+// ---------------------------------------------------------------------------
 
 async function processJob(job: any): Promise<void> {
   console.log(`[Arbiter] Running match ${job.matchId}...`);
@@ -185,7 +260,6 @@ async function processJob(job: any): Promise<void> {
     return;
   }
 
-  // Decrypt engine code if the server used per-arbiter RSA encryption
   let challengerCode = job.challenger.code as string;
   let defenderCode = job.defender.code as string;
   if (job.encrypted) {
@@ -206,11 +280,9 @@ async function processJob(job: any): Promise<void> {
     const result = await runMatch(
       { path: pathA, language: job.challenger.language, name: job.challenger.name },
       { path: pathB, language: job.defender.language, name: job.defender.name },
-      { games: job.gamesPlanned }
+      { games: job.gamesPlanned, matchId: job.matchId }
     );
 
-    // Reject matches where any game ended due to a real crash — do not submit for rating.
-    // Denylist known-good terminations; crash strings are inconsistent across engines.
     const CLEAN_TERMS = ["checkmate", "stalemate", "threefold", "insufficient", "50-move", "max plies", "draw", "normal", "adjudication", "timeout", "illegal move"];
     const crashedGame = result.games.find(g => {
       const termination = g.termination?.toLowerCase();
@@ -264,40 +336,47 @@ async function processJob(job: any): Promise<void> {
   }
 }
 
-// Build the ordered list of matchTypes requests for one poll cycle.
-// When training is included it gets its own request first; only if that
-// returns nothing do we fall back to the remaining types.
-function pollRequests(): Array<Record<string, unknown>> {
-  if (!MATCH_TYPES) return [{ count: POLL_COUNT }];
+// ---------------------------------------------------------------------------
+// Poll loop — concurrent slot-filling
+// ---------------------------------------------------------------------------
+
+function pollRequests(count: number): Array<Record<string, unknown>> {
+  if (!MATCH_TYPES) return [{ count }];
 
   if (MATCH_TYPES.includes("training")) {
     const others = MATCH_TYPES.filter(t => t !== "training");
     const reqs: Array<Record<string, unknown>> = [
-      { count: POLL_COUNT, matchTypes: ["training"] },
+      { count, matchTypes: ["training"] },
     ];
-    if (others.length > 0) reqs.push({ count: POLL_COUNT, matchTypes: others });
+    if (others.length > 0) reqs.push({ count, matchTypes: others });
     return reqs;
   }
 
-  return [{ count: POLL_COUNT, matchTypes: MATCH_TYPES }];
+  return [{ count, matchTypes: MATCH_TYPES }];
 }
 
-let polling = false;
+const activeJobs = new Set<Promise<void>>();
+let lastCleanup = 0;
+
+function fireJob(job: any): void {
+  let p: Promise<void>;
+  p = processJob(job).catch(err => {
+    console.error(`[Arbiter] Job error (${job.matchId}):`, err);
+  }).finally(() => {
+    activeJobs.delete(p);
+  });
+  activeJobs.add(p);
+}
 
 async function poll(): Promise<void> {
-  if (polling) {
-    // Previous batch still running — skip this tick and try again next interval
-    setTimeout(poll, POLL_INTERVAL_MS);
-    return;
-  }
+  const maxNow = getMaxConcurrent();
+  const slots = maxNow - activeJobs.size;
 
-  polling = true;
-  try {
-    if (!withinRateLimit()) {
-      console.warn(`[Arbiter] Rate limit reached (${rateLimitMax} reqs/${rateLimitWindowMs / 1000}s) — skipping poll.`);
-    } else {
-      for (const body of pollRequests()) {
+  if (slots > 0 && withinRateLimit()) {
+    try {
+      for (const body of pollRequests(slots)) {
         const res = await signedPost("/api/broker/next-jobs", body);
+
         if (res.status === 426) {
           const err = await res.json().catch(() => ({})) as any;
           console.error(`\n[Arbiter] !! OUTDATED VERSION !! ${err.error}`);
@@ -309,25 +388,48 @@ async function poll(): Promise<void> {
           }
           break;
         }
+
         if (!res.ok) {
           const err = await res.json().catch(() => ({})) as any;
           console.error(`[Arbiter] Failed to fetch jobs: ${err.error || res.status}`);
           break;
         }
+
         const jobs = await res.json() as any[];
-        for (const job of jobs) {
-          await processJob(job);
+
+        // Priority sort — read priority.txt on every tick (hot-reloadable)
+        const priority = getPriority();
+        if (priority && jobs.length > 1) {
+          const p = priority.toLowerCase();
+          jobs.sort((a, b) => {
+            const aMatch = a.challenger?.name?.toLowerCase().includes(p) || a.defender?.name?.toLowerCase().includes(p) ? 0 : 1;
+            const bMatch = b.challenger?.name?.toLowerCase().includes(p) || b.defender?.name?.toLowerCase().includes(p) ? 0 : 1;
+            return aMatch - bMatch;
+          });
         }
+
+        for (const job of jobs) {
+          fireJob(job);
+        }
+
         if (jobs.length > 0) break; // got work — don't fall through to next type
       }
+    } catch (err) {
+      console.error("[Arbiter] Poll error:", err);
     }
-  } catch (err) {
-    console.error("[Arbiter] Poll error:", err);
-  } finally {
-    polling = false;
+  } else if (!withinRateLimit()) {
+    console.warn(`[Arbiter] Rate limit reached (${rateLimitMax} reqs/${rateLimitWindowMs / 1000}s) — skipping poll.`);
   }
 
-  setTimeout(poll, POLL_INTERVAL_MS);
+  // Periodic orphan container cleanup
+  if (DOCKER_SANDBOX && Date.now() - lastCleanup > 300_000) {
+    cleanupOrphanContainers();
+    lastCleanup = Date.now();
+  }
+
+  // Sleep shorter when all slots full (just waiting for a slot to open)
+  const delay = activeJobs.size >= maxNow ? 2000 : POLL_INTERVAL_MS;
+  setTimeout(poll, delay);
 }
 
 export async function startBrokerRunner(): Promise<void> {
@@ -347,13 +449,23 @@ export async function startBrokerRunner(): Promise<void> {
   console.log("[Arbiter] Starting...");
   console.log(`[Arbiter] API: ${API_URL}`);
   console.log(`[Arbiter] Identity: ${WORKER_PUBLIC_KEY.slice(27, 60)}...`);
-  console.log(`[Arbiter] Poll interval: ${POLL_INTERVAL_MS}ms | Jobs per poll: ${POLL_COUNT}` +
+  console.log(
+    `[Arbiter] Concurrency: ${MAX_CONCURRENT} (night: ${NIGHT_MAX_CONCURRENT}, ${NIGHT_START_HOUR}:00–${NIGHT_END_HOUR}:00)` +
+    ` | Poll: ${POLL_INTERVAL_MS}ms` +
+    (DOCKER_SANDBOX ? ` | Sandbox: Docker (${process.env.SANDBOX_IMAGE || "agentchess-sandbox:latest"})` : " | Sandbox: bare subprocess") +
     (rateLimitMax < Infinity ? ` | Rate limit: ${rateLimitMax}/${rateLimitWindowMs / 1000}s` : "") +
     (MATCH_TYPES ? ` | Match types: ${MATCH_TYPES.join(", ")}` : "") +
-    (AUTO_UPDATE ? ` | Auto-update: enabled` : ""));
+    (AUTO_UPDATE ? ` | Auto-update: enabled` : "")
+  );
 
   await fetchServerPublicKey();
   await checkForUpdate();
+
+  if (DOCKER_SANDBOX) {
+    cleanupOrphanContainers();
+    lastCleanup = Date.now();
+  }
+
   console.log("[Arbiter] Ready. Polling for matches.");
   poll();
 }

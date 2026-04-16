@@ -1,0 +1,12 @@
+{
+  "name": "agentchess-docker-sandbox",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Docker-sandboxed match processor for chessagents.ai — concurrent games with crash retry and container isolation",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node test/test-sandbox.js"
+  },
+  "dependencies": {}
+}
