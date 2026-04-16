@@ -16,6 +16,10 @@ const BROKER_SECRET = process.env.BROKER_SECRET || "";
 let WORKER_PUBLIC_KEY = "";
 
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS || "5000", 10);
+const HEARTBEAT_INTERVAL_MS = parseInt(process.env.HEARTBEAT_INTERVAL_MS || "10000", 10);
+
+// Stable arbiter identity — set ARBITER_ID in env or auto-generate per-process.
+const ARBITER_ID = process.env.ARBITER_ID || `arbiter-${Math.random().toString(36).slice(2, 10)}`;
 
 // Concurrency — how many jobs to run in parallel.
 // Night scaling: bump the limit during off-peak hours (crosses midnight correctly).
@@ -23,6 +27,15 @@ const MAX_CONCURRENT = Math.max(1, parseInt(process.env.MAX_CONCURRENT || "10", 
 const NIGHT_MAX_CONCURRENT = Math.max(1, parseInt(process.env.NIGHT_MAX_CONCURRENT || "20", 10));
 const NIGHT_START_HOUR = parseInt(process.env.NIGHT_START_HOUR || "22", 10);
 const NIGHT_END_HOUR = parseInt(process.env.NIGHT_END_HOUR || "8", 10);
+
+// Dynamic scaling — admin can push a scaleTarget via heartbeat response, or
+// the arbiter auto-scales based on queue pressure within these bounds.
+const MIN_CONCURRENT = Math.max(1, parseInt(process.env.MIN_CONCURRENT || "1", 10));
+const MAX_SCALE_CAP = Math.max(1, parseInt(process.env.MAX_SCALE_CAP || String(MAX_CONCURRENT * 4), 10));
+let dynamicMaxConcurrent = MAX_CONCURRENT; // mutable — adjusted by auto-scaler and admin commands
+
+// Auto-scaling pressure tracking
+let pressureScore = 0; // positive = busy, negative = idle
 
 // Docker sandbox mode — agents run in isolated containers instead of bare subprocesses.
 const DOCKER_SANDBOX = process.env.DOCKER_SANDBOX === "true";
@@ -253,11 +266,41 @@ function cleanupOrphanContainers(): void {
 
 function getMaxConcurrent(): number {
   const hour = new Date().getHours();
-  // Handles ranges that cross midnight (e.g. 22–8)
   const isNight = NIGHT_START_HOUR > NIGHT_END_HOUR
     ? (hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR)
     : (hour >= NIGHT_START_HOUR && hour < NIGHT_END_HOUR);
-  return isNight ? NIGHT_MAX_CONCURRENT : MAX_CONCURRENT;
+  const nightBase = isNight ? NIGHT_MAX_CONCURRENT : MAX_CONCURRENT;
+  // Dynamic override wins if it differs from the static base
+  return Math.max(nightBase, dynamicMaxConcurrent);
+}
+
+// Auto-scaler: called after every poll, adjusts dynamicMaxConcurrent based on pressure.
+// pressure > 3 consecutive full polls → scale up 25%
+// pressure < -5 consecutive empty polls → scale down 10%
+function autoScale(jobsReturned: number, slotsRequested: number): void {
+  if (jobsReturned >= slotsRequested && slotsRequested > 0) {
+    pressureScore = Math.min(pressureScore + 1, 10);
+  } else if (jobsReturned === 0) {
+    pressureScore = Math.max(pressureScore - 1, -10);
+  } else {
+    pressureScore = Math.max(pressureScore - 0.5, -10);
+  }
+
+  if (pressureScore >= 3) {
+    const next = Math.min(Math.ceil(dynamicMaxConcurrent * 1.25), MAX_SCALE_CAP);
+    if (next !== dynamicMaxConcurrent) {
+      console.log(`[Arbiter] Auto-scaling up: ${dynamicMaxConcurrent} → ${next} (pressure=${pressureScore.toFixed(1)})`);
+      dynamicMaxConcurrent = next;
+    }
+    pressureScore = 0;
+  } else if (pressureScore <= -5) {
+    const next = Math.max(Math.floor(dynamicMaxConcurrent * 0.9), MIN_CONCURRENT);
+    if (next !== dynamicMaxConcurrent) {
+      console.log(`[Arbiter] Auto-scaling down: ${dynamicMaxConcurrent} → ${next} (pressure=${pressureScore.toFixed(1)})`);
+      dynamicMaxConcurrent = next;
+    }
+    pressureScore = 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +415,42 @@ function pollRequests(count: number): Array<Record<string, unknown>> {
   return [{ count, matchTypes: MATCH_TYPES }];
 }
 
+let startedAt = Date.now();
+
+async function sendHeartbeat(): Promise<void> {
+  try {
+    const body = {
+      arbiterId: ARBITER_ID,
+      version: ARBITER_VERSION,
+      activeJobs: activeJobs.size,
+      maxConcurrent: getMaxConcurrent(),
+      matchTypes: MATCH_TYPES,
+      uptimeMs: Date.now() - startedAt,
+      authMode: BROKER_SECRET ? "broker-secret" : "rsa",
+    };
+
+    const res = BROKER_SECRET
+      ? await fetch(`${API_URL}/api/broker/heartbeat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-broker-secret": BROKER_SECRET, "x-arbiter-version": ARBITER_VERSION },
+          body: JSON.stringify(body),
+        })
+      : await signedPost("/api/broker/heartbeat", body);
+
+    if (res.ok) {
+      const data = await res.json() as any;
+      if (typeof data.scaleTarget === "number") {
+        const clamped = Math.max(MIN_CONCURRENT, Math.min(data.scaleTarget, MAX_SCALE_CAP));
+        console.log(`[Arbiter] Admin scale command: ${dynamicMaxConcurrent} → ${clamped}`);
+        dynamicMaxConcurrent = clamped;
+        pressureScore = 0; // reset pressure after admin override
+      }
+    }
+  } catch {
+    // Heartbeat failure is non-fatal
+  }
+}
+
 const activeJobs = new Set<Promise<void>>();
 let lastCleanup = 0;
 
@@ -413,6 +492,8 @@ async function poll(): Promise<void> {
         }
 
         const jobs = await res.json() as any[];
+
+        autoScale(jobs.length, slots);
 
         // Priority sort — read priority.txt on every tick (hot-reloadable)
         const priority = getPriority();
@@ -485,6 +566,11 @@ export async function startBrokerRunner(): Promise<void> {
     lastCleanup = Date.now();
   }
 
+  startedAt = Date.now();
   console.log("[Arbiter] Ready. Polling for matches.");
   poll();
+
+  // Heartbeat loop — reports stats to API and picks up admin scale commands
+  sendHeartbeat();
+  setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
 }
