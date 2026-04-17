@@ -37,6 +37,14 @@ const MOVE_TIMEOUT_MS = parseInt(
   process.env.MOVE_TIMEOUT_MS || (DOCKER_SANDBOX ? "8000" : "15000"),
   10
 );
+// First move needs extra headroom for process/container cold start, interpreter
+// boot, and agent-side imports (e.g. `import chess` in Python). Without this,
+// engines regularly "time out on move 1" before they've actually started
+// thinking.
+const FIRST_MOVE_TIMEOUT_MS = parseInt(
+  process.env.FIRST_MOVE_TIMEOUT_MS || String(Math.max(MOVE_TIMEOUT_MS * 3, 20000)),
+  10
+);
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || "agentchess-sandbox:latest";
 const AGENT_MEMORY_LIMIT = process.env.AGENT_MEMORY_LIMIT || "256m";
 
@@ -74,7 +82,7 @@ class EngineController {
     });
   }
 
-  async getMove(fen: string): Promise<string> {
+  async getMove(fen: string, timeoutMs: number = MOVE_TIMEOUT_MS): Promise<string> {
     this.isDead = false;
     this.spawn();
 
@@ -132,9 +140,10 @@ class EngineController {
           completed = true;
           cleanup();
           child.kill("SIGKILL");
-          reject(new Error("move timeout"));
+          const details = stderr.trim().slice(0, 500) || stdout.trim().slice(0, 500);
+          reject(new Error(details ? `move timeout (${timeoutMs}ms): ${details}` : `move timeout (${timeoutMs}ms)`));
         }
-      }, MOVE_TIMEOUT_MS);
+      }, timeoutMs);
 
       const cleanup = () => {
         clearTimeout(timeout);
@@ -220,13 +229,13 @@ class DockerEngineController {
     this.codeWritten = true;
   }
 
-  async getMove(fen: string): Promise<string> {
+  async getMove(fen: string, timeoutMs: number = MOVE_TIMEOUT_MS): Promise<string> {
     if (!this.containerStarted) this.startContainer();
     if (!this.codeWritten) this.writeCodeToContainer();
-    return this.execMove(fen, false);
+    return this.execMove(fen, false, timeoutMs);
   }
 
-  private execMove(fen: string, isRetry: boolean): Promise<string> {
+  private execMove(fen: string, isRetry: boolean, timeoutMs: number): Promise<string> {
     const runtime = this.config.language === "js" ? "node" : "python3";
 
     return new Promise((resolve, reject) => {
@@ -243,9 +252,10 @@ class DockerEngineController {
         if (!completed) {
           completed = true;
           child.kill("SIGKILL");
-          reject(new Error("move timeout"));
+          const details = stderr.trim().slice(0, 500) || stdout.trim().slice(0, 500);
+          reject(new Error(details ? `move timeout (${timeoutMs}ms): ${details}` : `move timeout (${timeoutMs}ms)`));
         }
-      }, MOVE_TIMEOUT_MS);
+      }, timeoutMs);
 
       child.stdout?.on("data", (d: Buffer) => {
         stdout += d.toString();
@@ -283,7 +293,7 @@ class DockerEngineController {
               reject(err);
               return;
             }
-            this.execMove(fen, true).then(resolve).catch(reject);
+            this.execMove(fen, true, timeoutMs).then(resolve).catch(reject);
           } else {
             reject(err);
           }
@@ -378,26 +388,54 @@ async function runGame(
   const whiteController = makeController(white, "w");
   const blackController = makeController(black, "b");
 
+  const firstMoveFired: Record<"w" | "b", boolean> = { w: false, b: false };
+
   try {
     while (!chess.isGameOver() && chess.moveNumber() <= MAX_PLIES) {
       const currentController = chess.turn() === "w" ? whiteController : blackController;
       const fen = chess.fen();
+      const side = chess.turn() as "w" | "b";
+      const isFirstMoveForSide = !firstMoveFired[side];
+      const budgetMs = isFirstMoveForSide ? FIRST_MOVE_TIMEOUT_MS : MOVE_TIMEOUT_MS;
 
       let move: string;
       try {
-        move = await currentController.getMove(fen);
+        move = await currentController.getMove(fen, budgetMs);
       } catch (err: any) {
-        const loserColor = chess.turn();
-        termination = err.message || "agent error";
-        return {
-          round,
-          white: white.name,
-          black: black.name,
-          result: loserColor === "w" ? "0-1" : "1-0",
-          termination,
-          pgn: buildPgn(chess, white.name, black.name, round, loserColor === "w" ? "0-1" : "1-0", termination),
-        };
+        // Failsafe: if the *first* move for this side fails, retry once with
+        // the same (generous) budget. Cold-start flakiness shouldn't forfeit
+        // a game on move 1.
+        if (isFirstMoveForSide) {
+          console.warn(`  First-move failure for ${side === "w" ? "white" : "black"} (${err?.message || "unknown"}) — retrying once`);
+          try {
+            move = await currentController.getMove(fen, budgetMs);
+          } catch (retryErr: any) {
+            const loserColor = chess.turn();
+            termination = retryErr?.message || err?.message || "agent error";
+            return {
+              round,
+              white: white.name,
+              black: black.name,
+              result: loserColor === "w" ? "0-1" : "1-0",
+              termination,
+              pgn: buildPgn(chess, white.name, black.name, round, loserColor === "w" ? "0-1" : "1-0", termination),
+            };
+          }
+        } else {
+          const loserColor = chess.turn();
+          termination = err.message || "agent error";
+          return {
+            round,
+            white: white.name,
+            black: black.name,
+            result: loserColor === "w" ? "0-1" : "1-0",
+            termination,
+            pgn: buildPgn(chess, white.name, black.name, round, loserColor === "w" ? "0-1" : "1-0", termination),
+          };
+        }
       }
+
+      firstMoveFired[side] = true;
 
       let moveResult;
       try {
