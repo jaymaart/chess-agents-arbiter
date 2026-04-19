@@ -33,6 +33,10 @@ const NIGHT_END_HOUR = parseInt(process.env.NIGHT_END_HOUR || "8", 10);
 
 // Dynamic scaling — admin can push a scaleTarget via heartbeat response, or
 // the arbiter auto-scales based on queue pressure within these bounds.
+// AUTO_SCALE=false pins concurrency at MAX_CONCURRENT (and its night variant).
+// Admin heartbeat scaleTarget still applies — only the pressure-based auto-scaler
+// and the local-load emergency scale-down are disabled.
+const AUTO_SCALE = (process.env.AUTO_SCALE ?? "true").toLowerCase() !== "false";
 const MIN_CONCURRENT = Math.max(1, parseInt(process.env.MIN_CONCURRENT || "1", 10));
 const MAX_SCALE_CAP = Math.max(1, parseInt(process.env.MAX_SCALE_CAP || String(MAX_CONCURRENT * 4), 10));
 let dynamicMaxConcurrent = MAX_CONCURRENT; // mutable — adjusted by auto-scaler and admin commands
@@ -378,7 +382,7 @@ function printBanner(): void {
   const sbxDisplay  = DOCKER_SANDBOX
     ? `docker  (${process.env.SANDBOX_IMAGE || "agentchess-sandbox:latest"})`
     : "bare subprocess";
-  const wkrDisplay  = `${MAX_CONCURRENT}  (night: ${NIGHT_MAX_CONCURRENT} · ${NIGHT_START_HOUR}:00–${NIGHT_END_HOUR}:00)  ·  cap: ${MAX_SCALE_CAP}`;
+  const wkrDisplay  = `${MAX_CONCURRENT}  (night: ${NIGHT_MAX_CONCURRENT} · ${NIGHT_START_HOUR}:00–${NIGHT_END_HOUR}:00)  ·  ${AUTO_SCALE ? `cap: ${MAX_SCALE_CAP}` : `${Y}auto-scale off${R}`}`;
   const pollDisplay = `${POLL_INTERVAL_MS}ms` +
     (rateLimitMax < Infinity ? `  ·  rate limit: ${rateLimitMax}/${rateLimitWindowMs / 1000}s` : "");
   const wsDisplay   = WS_URL.replace(/^wss?:\/\//, "");
@@ -443,6 +447,7 @@ function getMaxConcurrent(): number {
 // Threshold: 0.9× cores (90% load) — fires before the machine saturates.
 // Scale-up is already suppressed at 0.85×, so this provides a harder backstop.
 function checkEmergencyScaleDown(): void {
+  if (!AUTO_SCALE) return;
   const load1m = os.loadavg()[0];
   const cores = os.cpus().length;
   if (load1m >= cores * 0.9 && dynamicMaxConcurrent > MIN_CONCURRENT) {
@@ -459,6 +464,7 @@ function checkEmergencyScaleDown(): void {
 // pressure > 3 consecutive full polls → scale up 25%
 // pressure < -5 consecutive empty polls → scale down 10%
 function autoScale(jobsReturned: number, slotsRequested: number): void {
+  if (!AUTO_SCALE) return;
   if (jobsReturned >= slotsRequested && slotsRequested > 0) {
     pressureScore = Math.min(pressureScore + 1, 10);
   } else if (jobsReturned === 0) {
