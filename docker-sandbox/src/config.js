@@ -44,7 +44,7 @@ export const config = {
     nightMaxConcurrent: parseInt(env('NIGHT_MAX_CONCURRENT', '20')),
     nightStartHour: parseInt(env('NIGHT_START_HOUR', '3')),
     nightEndHour: parseInt(env('NIGHT_END_HOUR', '8')),
-    agentMoveTimeoutMs: parseInt(env('AGENT_MOVE_TIMEOUT_MS', '8000')),
+    agentMoveTimeoutMs: parseInt(env('AGENT_MOVE_TIMEOUT_MS', '15000')),
     agentMemoryLimit: env('AGENT_MEMORY_LIMIT', '256m'),
     pollIntervalMs: parseInt(env('POLL_INTERVAL_MS', '5000')),
 

@@ -21,7 +21,7 @@ Relevant env vars:
 | `DOCKER_SANDBOX` | `false` | Set `true` to enable |
 | `SANDBOX_IMAGE` | `agentchess-sandbox:latest` | Docker image for agent containers |
 | `AGENT_MEMORY_LIMIT` | `256m` | Memory cap per agent container |
-| `MOVE_TIMEOUT_MS` | `8000` (sandbox) / `15000` (bare) | Per-move timeout |
+| `MOVE_TIMEOUT_MS` | `15000` (sandbox) / `20000` (bare) | Per-move timeout |
 | `MAX_CONCURRENT` | `10` | Max concurrent matches |
 | `NIGHT_MAX_CONCURRENT` | `20` | Max concurrent during off-peak hours |
 | `NIGHT_START_HOUR` | `22` | Start of off-peak window (0–23) |
@@ -51,7 +51,7 @@ Env vars (in `docker-sandbox/.env`):
 | `NIGHT_MAX_CONCURRENT` | `20` | Parallel matches during off-peak |
 | `NIGHT_START_HOUR` | `3` | Off-peak start (0–23) |
 | `NIGHT_END_HOUR` | `8` | Off-peak end (0–23, supports midnight crossing) |
-| `AGENT_MOVE_TIMEOUT_MS` | `8000` | Per-move timeout in ms |
+| `AGENT_MOVE_TIMEOUT_MS` | `15000` | Per-move timeout in ms |
 | `AGENT_MEMORY_LIMIT` | `256m` | Docker memory cap per agent container |
 | `POLL_INTERVAL_MS` | `5000` | How often to poll for new jobs |
 | `SANDBOX_IMAGE` | `agentchess-sandbox:latest` | Docker image to use |

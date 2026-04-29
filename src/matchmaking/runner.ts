@@ -34,15 +34,15 @@ const UCI_MOVE_REGEX = /[a-h][1-8][a-h][1-8][qrbn]?/;
 const MAX_PLIES = 500;
 const DOCKER_SANDBOX = process.env.DOCKER_SANDBOX === "true";
 const MOVE_TIMEOUT_MS = parseInt(
-  process.env.MOVE_TIMEOUT_MS || (DOCKER_SANDBOX ? "8000" : "15000"),
+  process.env.MOVE_TIMEOUT_MS || (DOCKER_SANDBOX ? "15000" : "20000"),
   10
 );
 // First move needs extra headroom for process/container cold start, interpreter
 // boot, and agent-side imports (e.g. `import chess` in Python). Without this,
 // engines regularly "time out on move 1" before they've actually started
-// thinking.
+// thinking. On overloaded shared hosts the cold-start alone can eat 5-10s.
 const FIRST_MOVE_TIMEOUT_MS = parseInt(
-  process.env.FIRST_MOVE_TIMEOUT_MS || String(Math.max(MOVE_TIMEOUT_MS * 3, 20000)),
+  process.env.FIRST_MOVE_TIMEOUT_MS || String(Math.max(MOVE_TIMEOUT_MS * 3, 45000)),
   10
 );
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || "agentchess-sandbox:latest";
