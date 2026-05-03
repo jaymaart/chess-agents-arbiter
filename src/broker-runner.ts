@@ -557,19 +557,33 @@ async function processJob(job: any): Promise<void> {
       }
     );
 
-    const CLEAN_TERMS = ["checkmate", "stalemate", "threefold", "insufficient", "50-move", "max plies", "draw", "normal", "adjudication", "timeout", "illegal move"];
-    const crashedGame = result.games.find(g => {
-      const termination = g.termination?.toLowerCase();
-      return !termination || !CLEAN_TERMS.some(t => termination.includes(t));
-    });
+    // startsWith — not includes — so "Command failed: docker run..." can't
+    // accidentally match a clean prefix embedded mid-string.
+    const CLEAN_PREFIXES = [
+      "checkmate", "stalemate", "threefold", "insufficient",
+      "50-move", "max plies", "move timeout", "illegal move", "adjudication",
+    ];
+    const isClean = (t: string | undefined) => {
+      if (!t) return false;
+      const lower = t.toLowerCase().trim();
+      return CLEAN_PREFIXES.some(p => lower.startsWith(p));
+    };
+    const crashedGame = result.games.find(g => !isClean(g.termination));
     if (crashedGame) {
       const crashReason = `Crash-terminated game (round ${crashedGame.round}): "${crashedGame.termination}"`;
-      console.warn(`[Arbiter] Match ${job.matchId} has crashed game (round ${crashedGame.round}: "${crashedGame.termination}"). Reporting — no ratings applied.`);
+      // Side-to-move when crash hit took the loss — that's the culprit.
+      // Round 1: challenger=white. Round 2: challenger=black.
+      const isChallengerWhite = crashedGame.round % 2 !== 0;
+      const whiteLost = crashedGame.result === "0-1";
+      const challengerLost = whiteLost === isChallengerWhite;
+      const culprit: "challenger" | "defender" = challengerLost ? "challenger" : "defender";
+      console.warn(`[Arbiter] Match ${job.matchId} has crashed game (round ${crashedGame.round}: "${crashedGame.termination}"). Culprit: ${culprit}. Reporting — no ratings applied.`);
       const crashRes = await signedPost("/api/broker/report-crash", {
         jobId: job.jobId,
         matchId: job.matchId,
         reason: crashReason,
         pgn: result.pgn,
+        culprit,
       });
       if (!crashRes.ok) {
         const err = await crashRes.json().catch(() => ({})) as any;
