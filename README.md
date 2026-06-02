@@ -11,7 +11,7 @@ The Docker image is built automatically from this repo on every push and publish
 ```
 [Your machine]  ──── POST /api/broker/next-jobs ──────▶  [Arena API]
                 ◀─── Job + serverSignature ──────────
-                     (engine code is obfuscated in transit)
+                     (engine source encrypted to your key)
 
 [Your machine]  ──── verifyServerSignature(job) ─────▶  ✓ or ✗
 
@@ -21,7 +21,9 @@ The Docker image is built automatically from this repo on every push and publish
 [Your machine]  ──── POST /api/broker/submit ────────▶  [Arena API]
 ```
 
-Every job is **Ed25519-signed** by the server — the signature covers the match ID and SHA-256 hashes of the original engine source. Engine code is **obfuscated before dispatch** and then **encrypted with your RSA-4096 public key** (AES-256-GCM + RSA-OAEP hybrid), so only your private key can decrypt it. Tampered payloads are silently rejected.
+Every job is **Ed25519-signed** by the server — the signature covers the match ID and SHA-256 hashes of the engine source. Engine source is **encrypted with your RSA-4096 public key** (AES-256-GCM + RSA-OAEP hybrid), so only your private key can decrypt it in transit. Tampered payloads are silently rejected.
+
+> **Note (Season 2):** engine source is dispatched **unobfuscated** — your machine decrypts it to plaintext to run the match. As an arbiter operator you agreed not to retain, copy, or reuse any engine source you receive; every match your runner processes is logged against your account. See **Security** below.
 
 ---
 
@@ -115,12 +117,14 @@ Without `AUTO_UPDATE=true`, the arbiter still checks for updates and logs a noti
 - **`src/crypto.ts`** — Ed25519 verify (server sig) + RSA-OAEP decrypt (engine payload) + auto-detecting sign
 - **`src/matchmaking/runner.ts`** — spawns engine subprocesses, plays games, returns PGN
 
-Chess agents run as sandboxed subprocesses with no network access and a strict move timeout.
+By default, chess agents run as **bare local subprocesses** with a strict per-move timeout. For real isolation (no network, read-only FS, dropped capabilities, memory cap) set `DOCKER_SANDBOX=true` — strongly recommended, see below.
 
 ---
 
 ## Security
 
-- Engine code is obfuscated by the server before dispatch, then encrypted with **your RSA-4096 public key** using hybrid AES-256-GCM + RSA-OAEP. The payload is mathematically unreadable without your private key.
-- Your private key never leaves your machine — it is used only for request signing and decrypting engine payloads locally.
-- Results are attributed to your public key and permanently recorded.
+**⚠️ You run untrusted code.** Engine source is dispatched **unobfuscated** (Season 2) and decrypted to plaintext on your machine to run the match. In the default subprocess mode that code executes directly on your host with your user's permissions. Anyone can submit an engine, so treat every match as untrusted code.
+
+- **Sandbox it.** Set `DOCKER_SANDBOX=true` to run each engine in an isolated container — network disabled, filesystem read-only, all capabilities dropped, memory capped. This is opt-in but **strongly recommended** for anyone running on a personal or shared machine. Requires the Docker socket mounted (`-v /var/run/docker.sock:/var/run/docker.sock`).
+- **Transit encryption.** Engine source is encrypted with **your RSA-4096 public key** (hybrid AES-256-GCM + RSA-OAEP) and is unreadable in transit without your private key. Your private key never leaves your machine.
+- **Don't keep the source.** As an arbiter you agreed not to retain, copy, redistribute, or reuse any engine source you receive. Every match your runner processes is attributed to your key and permanently recorded; the arena can see which engines your machine has handled.
