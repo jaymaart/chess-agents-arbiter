@@ -56,6 +56,20 @@ const PYTHON_CMD = process.platform === "win32" ? "python" : "python3";
 // Bare subprocess engine controller (existing behavior)
 // ---------------------------------------------------------------------------
 
+// What we feed the engine on stdin each move: the current FEN, optionally
+// followed by the full game history in UCI — "<fen> moves e2e4 e7e5 ...".
+// Mirrors UCI's `position fen <FEN> moves ...`. A bare FEN carries no history,
+// so an engine can't see a threefold repetition coming; the move list lets it.
+// Engines that only read the 6 FEN fields can ignore the trailing tokens.
+function engineInputLine(fen: string, history: string[]): string {
+  return history.length ? `${fen} moves ${history.join(" ")}` : fen;
+}
+
+// chess.js move result → UCI (e.g. {from:"e7",to:"e8",promotion:"q"} → "e7e8q").
+function moveToUci(m: { from: string; to: string; promotion?: string }): string {
+  return `${m.from}${m.to}${m.promotion ?? ""}`;
+}
+
 class EngineController {
   private child: ChildProcess | null = null;
   private config: AgentConfig;
@@ -82,7 +96,7 @@ class EngineController {
     });
   }
 
-  async getMove(fen: string, timeoutMs: number = MOVE_TIMEOUT_MS): Promise<string> {
+  async getMove(fen: string, timeoutMs: number = MOVE_TIMEOUT_MS, history: string[] = []): Promise<string> {
     this.isDead = false;
     this.spawn();
 
@@ -158,7 +172,7 @@ class EngineController {
       child.on("exit", onExit);
       child.on("error", onError);
 
-      child.stdin?.write(fen + "\n");
+      child.stdin?.write(engineInputLine(fen, history) + "\n");
       child.stdin?.end();
     });
   }
@@ -229,13 +243,13 @@ class DockerEngineController {
     this.codeWritten = true;
   }
 
-  async getMove(fen: string, timeoutMs: number = MOVE_TIMEOUT_MS): Promise<string> {
+  async getMove(fen: string, timeoutMs: number = MOVE_TIMEOUT_MS, history: string[] = []): Promise<string> {
     if (!this.containerStarted) this.startContainer();
     if (!this.codeWritten) this.writeCodeToContainer();
-    return this.execMove(fen, false, timeoutMs);
+    return this.execMove(fen, false, timeoutMs, history);
   }
 
-  private execMove(fen: string, isRetry: boolean, timeoutMs: number): Promise<string> {
+  private execMove(fen: string, isRetry: boolean, timeoutMs: number, history: string[] = []): Promise<string> {
     const runtime = this.config.language === "js" ? "node" : "python3";
 
     return new Promise((resolve, reject) => {
@@ -293,7 +307,7 @@ class DockerEngineController {
               reject(err);
               return;
             }
-            this.execMove(fen, true, timeoutMs).then(resolve).catch(reject);
+            this.execMove(fen, true, timeoutMs, history).then(resolve).catch(reject);
           } else {
             reject(err);
           }
@@ -308,7 +322,7 @@ class DockerEngineController {
         }
       });
 
-      child.stdin?.write(fen + "\n");
+      child.stdin?.write(engineInputLine(fen, history) + "\n");
       child.stdin?.end();
     });
   }
@@ -379,6 +393,9 @@ async function runGame(
 ): Promise<GameResult> {
   const chess = new Chess();
   let termination = "normal";
+  // Full game history in UCI, sent to engines each move so they can detect
+  // threefold repetition (a bare FEN has none).
+  const uciHistory: string[] = [];
 
   const makeController = (agent: AgentConfig, side: string) =>
     DOCKER_SANDBOX
@@ -400,7 +417,7 @@ async function runGame(
 
       let move: string;
       try {
-        move = await currentController.getMove(fen, budgetMs);
+        move = await currentController.getMove(fen, budgetMs, uciHistory);
       } catch (err: any) {
         // Failsafe: if the *first* move for this side fails, retry once with
         // the same (generous) budget. Cold-start flakiness shouldn't forfeit
@@ -408,7 +425,7 @@ async function runGame(
         if (isFirstMoveForSide) {
           console.warn(`  First-move failure for ${side === "w" ? "white" : "black"} (${err?.message || "unknown"}) — retrying once`);
           try {
-            move = await currentController.getMove(fen, budgetMs);
+            move = await currentController.getMove(fen, budgetMs, uciHistory);
           } catch (retryErr: any) {
             const loserColor = chess.turn();
             termination = retryErr?.message || err?.message || "agent error";
@@ -460,6 +477,9 @@ async function runGame(
           pgn: buildPgn(chess, white.name, black.name, round, loserColor === "w" ? "0-1" : "1-0", termination),
         };
       }
+
+      // Record the played move so the next FEN ships with full game history.
+      uciHistory.push(moveToUci(moveResult));
 
       // Fire live move event (fire-and-forget — never block gameplay)
       if (onMove) {
