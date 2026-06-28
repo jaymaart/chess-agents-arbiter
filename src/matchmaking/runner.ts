@@ -33,16 +33,19 @@ export interface AgentConfig {
 const UCI_MOVE_REGEX = /[a-h][1-8][a-h][1-8][qrbn]?/;
 const MAX_PLIES = 500;
 const DOCKER_SANDBOX = process.env.DOCKER_SANDBOX === "true";
+// Per-move budget. Time control is 5+0.1, so the real move budget is 5s.
+// (The old 15s/20s was headroom for obfuscated engines — obfuscation was
+// removed in Season 2, so engines run at native speed and 5s applies again.)
 const MOVE_TIMEOUT_MS = parseInt(
-  process.env.MOVE_TIMEOUT_MS || (DOCKER_SANDBOX ? "15000" : "20000"),
+  process.env.MOVE_TIMEOUT_MS || "5000",
   10
 );
-// First move needs extra headroom for process/container cold start, interpreter
-// boot, and agent-side imports (e.g. `import chess` in Python). Without this,
-// engines regularly "time out on move 1" before they've actually started
-// thinking. On overloaded shared hosts the cold-start alone can eat 5-10s.
+// First move keeps extra headroom for process/container cold start, interpreter
+// boot, and agent-side imports (e.g. `import chess` in Python) — this is a
+// startup cost, NOT thinking time, and is unrelated to the obfuscation buffer.
+// Without it, engines regularly "time out on move 1" before they've started.
 const FIRST_MOVE_TIMEOUT_MS = parseInt(
-  process.env.FIRST_MOVE_TIMEOUT_MS || String(Math.max(MOVE_TIMEOUT_MS * 3, 45000)),
+  process.env.FIRST_MOVE_TIMEOUT_MS || String(Math.max(MOVE_TIMEOUT_MS * 3, 15000)),
   10
 );
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || "agentchess-sandbox:latest";
