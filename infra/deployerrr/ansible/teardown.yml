@@ -1,0 +1,8 @@
+---
+- name: No deployable repository Compose file configured
+  hosts: approved_servers
+  gather_facts: false
+  tasks:
+    - name: Stop because repository deployment source is missing
+      ansible.builtin.fail:
+        msg: "Scan a repository with root docker-compose.yml or compose.yml before teardown."

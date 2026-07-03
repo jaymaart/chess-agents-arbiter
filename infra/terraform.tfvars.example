@@ -1,0 +1,8 @@
+app_name           = "test"
+environment_name   = "Staging"
+environment_type   = "staging"
+cloud_provider     = "hetzner"
+region             = "local"
+domain             = "test.staging.local"
+public_ports       = [80, 443]
+ssh_allowed_cidrs  = []
