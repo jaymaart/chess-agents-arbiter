@@ -1,23 +1,29 @@
 # =============================================================================
-# AgentChess Sandbox — Minimal dual-runtime container for untrusted agents
-# Supports both Node.js and Python chess agents
+# AgentChess Sandbox — Minimal multi-runtime container for untrusted agents
+# Runtimes: deno (default for JS since Season 3), node (fallback), python3
+#
+# Debian slim (not alpine): the official deno binary is glibc-linked.
 # =============================================================================
 
-FROM node:22-alpine
+FROM node:22-slim
 
-# Add Python 3 runtime
-RUN apk --no-cache add python3 coreutils && \
-    rm -rf /var/cache/apk/*
+# Deno — deny-by-default runtime for JS agents (deno run --no-prompt).
+# denoland/deno:bin tracks latest 2.x; pin (e.g. bin-2.x.y) for reproducible builds.
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
 
-# Install chess.js globally so agents can require('chess.js')
+# Python 3 runtime
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Legacy: chess.js on NODE_PATH for pre-fortress-gate engines run under node.
+# The current validation allowlist only permits require("readline"), and deno
+# ignores NODE_PATH — safe to drop once no grandfathered engines remain.
 RUN npm install -g chess.js && \
     rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
-
-# Set NODE_PATH so global modules are found by require()
 ENV NODE_PATH=/usr/local/lib/node_modules
 
 # Create non-root user
-RUN adduser -D -s /bin/sh agent
+RUN useradd -m -s /bin/sh agent
 
 USER agent
 WORKDIR /tmp

@@ -18,6 +18,11 @@ FROM node:20-slim
 
 WORKDIR /app
 
+# Deno — JS agents run under `deno run --no-prompt` (deny-by-default: no fs,
+# net, env, or subprocess access at the runtime level) since Season 3.
+# denoland/deno:bin tracks latest 2.x; pin (e.g. bin-2.x.y) for reproducibility.
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+
 # python3 + common chess libraries required to execute .py chess agents
 RUN apt-get update && apt-get install -y python3 python3-pip stockfish --no-install-recommends \
     && pip3 install chess stockfish --break-system-packages \
