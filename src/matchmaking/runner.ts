@@ -33,16 +33,19 @@ export interface AgentConfig {
 const UCI_MOVE_REGEX = /[a-h][1-8][a-h][1-8][qrbn]?/;
 const MAX_PLIES = 500;
 const DOCKER_SANDBOX = process.env.DOCKER_SANDBOX === "true";
+// Per-move budget. Time control is 5+0.1, so the real move budget is 5s.
+// (The old 15s/20s was headroom for obfuscated engines — obfuscation was
+// removed in Season 2, so engines run at native speed and 5s applies again.)
 const MOVE_TIMEOUT_MS = parseInt(
-  process.env.MOVE_TIMEOUT_MS || (DOCKER_SANDBOX ? "15000" : "20000"),
+  process.env.MOVE_TIMEOUT_MS || "5000",
   10
 );
-// First move needs extra headroom for process/container cold start, interpreter
-// boot, and agent-side imports (e.g. `import chess` in Python) — plus, for large
-// engines, loading the net/tables once. Without this, engines regularly "time
-// out on move 1" before they've actually started thinking.
+// First move keeps extra headroom for process/container cold start, interpreter
+// boot, and agent-side imports (e.g. `import chess` in Python) — plus, for
+// large engines, loading the net/tables once per game. This is startup cost,
+// NOT thinking time. Without it, engines "time out on move 1" before starting.
 const FIRST_MOVE_TIMEOUT_MS = parseInt(
-  process.env.FIRST_MOVE_TIMEOUT_MS || String(Math.max(MOVE_TIMEOUT_MS * 3, 45000)),
+  process.env.FIRST_MOVE_TIMEOUT_MS || String(Math.max(MOVE_TIMEOUT_MS * 3, 15000)),
   10
 );
 const SANDBOX_IMAGE = process.env.SANDBOX_IMAGE || "agentchess-sandbox:latest";
@@ -111,6 +114,20 @@ function jsSpawnSpec(scriptPath: string): { cmd: string; args: string[] } {
 // subprocess vs. docker exec).
 // ---------------------------------------------------------------------------
 
+// What we feed the engine on stdin each move: the current FEN, optionally
+// followed by the full game history in UCI — "<fen> moves e2e4 e7e5 ...".
+// Mirrors UCI's `position fen <FEN> moves ...`. A bare FEN carries no history,
+// so an engine can't see a threefold repetition coming; the move list lets it.
+// Engines that only read the 6 FEN fields can ignore the trailing tokens.
+function engineInputLine(fen: string, history: string[]): string {
+  return history.length ? `${fen} moves ${history.join(" ")}` : fen;
+}
+
+// chess.js move result → UCI (e.g. {from:"e7",to:"e8",promotion:"q"} → "e7e8q").
+function moveToUci(m: { from: string; to: string; promotion?: string }): string {
+  return `${m.from}${m.to}${m.promotion ?? ""}`;
+}
+
 abstract class PersistentController {
   protected child: ChildProcess | null = null;
   protected dead = true;
@@ -176,9 +193,10 @@ abstract class PersistentController {
   private resolvePending(move: string): void { const p = this.pending; this.pending = null; p?.resolve(move); }
   private rejectPending(err: Error): void { const p = this.pending; this.pending = null; p?.reject(err); }
 
-  /** Ask the engine for its move in `fen`. The process persists between calls; a
-   *  one-shot engine that exited last move is respawned first. */
-  async getMove(fen: string, timeoutMs: number = MOVE_TIMEOUT_MS): Promise<string> {
+  /** Ask the engine for its move in `fen` (+ UCI history for repetition
+   *  detection). The process persists between calls; a one-shot engine that
+   *  exited last move is respawned first. */
+  async getMove(fen: string, timeoutMs: number = MOVE_TIMEOUT_MS, history: string[] = []): Promise<string> {
     if (!this.child || this.dead) this.boot();
     const child = this.child!;
 
@@ -204,7 +222,7 @@ abstract class PersistentController {
         reject: (e) => { clearTimeout(timer); reject(e); },
       };
 
-      try { child.stdin?.write(fen + "\n"); } catch { /* settled by close / timeout */ }
+      try { child.stdin?.write(engineInputLine(fen, history) + "\n"); } catch { /* settled by close / timeout */ }
       this.scan(); // in case output was buffered before the request registered
     });
   }
@@ -398,6 +416,9 @@ async function runGame(
 ): Promise<GameResult> {
   const chess = new Chess();
   let termination = "normal";
+  // Full game history in UCI, sent to engines each move so they can detect
+  // threefold repetition (a bare FEN has none).
+  const uciHistory: string[] = [];
 
   const makeController = (agent: AgentConfig, side: string) =>
     DOCKER_SANDBOX
@@ -419,14 +440,14 @@ async function runGame(
 
       let move: string;
       try {
-        move = await currentController.getMove(fen, budgetMs);
+        move = await currentController.getMove(fen, budgetMs, uciHistory);
       } catch (err: any) {
         // Failsafe: if the *first* move for this side fails, retry once with the
         // same (generous) budget. Cold-start flakiness shouldn't forfeit on move 1.
         if (isFirstMoveForSide) {
           console.warn(`  First-move failure for ${side === "w" ? "white" : "black"} (${err?.message || "unknown"}) — retrying once`);
           try {
-            move = await currentController.getMove(fen, budgetMs);
+            move = await currentController.getMove(fen, budgetMs, uciHistory);
           } catch (retryErr: any) {
             const loserColor = chess.turn();
             termination = retryErr?.message || err?.message || "agent error";
@@ -478,6 +499,9 @@ async function runGame(
           pgn: buildPgn(chess, white.name, black.name, round, loserColor === "w" ? "0-1" : "1-0", termination),
         };
       }
+
+      // Record the played move so the next FEN ships with full game history.
+      uciHistory.push(moveToUci(moveResult));
 
       // Fire live move event (fire-and-forget — never block gameplay)
       if (onMove) {
