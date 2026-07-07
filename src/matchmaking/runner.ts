@@ -1,5 +1,5 @@
 import { spawn, ChildProcess, execFileSync, spawnSync } from "child_process";
-import { readFileSync } from "fs";
+import { readFileSync, statSync } from "fs";
 import path from "path";
 import { Chess } from "chess.js";
 
@@ -485,8 +485,17 @@ async function runGame(
         if (isFirstMoveForSide) {
           // A first-move TIMEOUT is the signature of an agent blocked reading
           // stdin to EOF — demote it to per-move EOF mode. A crash is just a
-          // flake: retry on the persistent protocol.
-          const demote = /timeout/i.test(err?.message || "");
+          // flake: retry on the persistent protocol. ONLY small engines are
+          // demoted: read-to-EOF agents are tiny hand-rolled files, while a
+          // large (NNUE-class) engine that barely missed the first-move window
+          // must keep persistence — per-move respawn would make it reload its
+          // net inside the 5s budget and lose on move 2.
+          let smallEngine = true;
+          try {
+            const agentPath = (side === "w" ? white : black).path;
+            smallEngine = statSync(agentPath).size < 1024 * 1024;
+          } catch { /* size unknown → assume small */ }
+          const demote = smallEngine && /timeout/i.test(err?.message || "");
           console.warn(`  First-move failure for ${side === "w" ? "white" : "black"} (${err?.message || "unknown"}) — retrying once${demote ? " in legacy EOF mode" : ""}`);
           try {
             if (demote) currentController.legacyEof = true;
