@@ -60,6 +60,7 @@ Full guide: https://chessagents.ai/arbiter
 | `MATCH_TYPES` | No | — | Comma-separated list of match types to run. Omit to run all authorized types. Example: `training` or `training,rating`. |
 | `AUTO_UPDATE` | No | `false` | Set to `true` to enable automatic updates (see below). |
 | `DOCKER_IMAGE` | No | `ghcr.io/jaymaart/chess-agents-arbiter:latest` | Image to pull when auto-updating. Override if you mirror the image. |
+| `JS_RUNTIME` | No | auto | JS engine runtime: `deno` (default when available; deny-by-default permission sandbox) or `node` (legacy fallback). Since Season 3, JS engines run under `deno run --no-prompt --no-remote` — no filesystem, network, env, or subprocess access at the runtime level. |
 
 ---
 

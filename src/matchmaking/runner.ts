@@ -53,6 +53,54 @@ const AGENT_MEMORY_LIMIT = process.env.AGENT_MEMORY_LIMIT || "256m";
 const PYTHON_CMD = process.platform === "win32" ? "python" : "python3";
 
 // ---------------------------------------------------------------------------
+// JS engine runtime — Deno by default (Season 3+).
+//
+// `deno run --no-prompt` is deny-by-default: the engine gets no filesystem,
+// network, env, or subprocess access at the RUNTIME level, on top of the
+// static-analysis gate and the OS/container sandbox. Engines are plain
+// stdin/stdout CJS/ESM (broker-runner already writes .cjs/.mjs), and Deno's
+// Node compat covers the allowed surface (readline, process.stdin/stdout).
+//
+// JS_RUNTIME=node|deno overrides. Unset → auto: use deno when the binary is
+// present, else fall back to node with a warning (older bare-mode hosts).
+// ---------------------------------------------------------------------------
+const JS_RUNTIME_ENV = process.env.JS_RUNTIME;
+let cachedJsRuntime: "deno" | "node" | null = null;
+
+function resolveJsRuntime(): "deno" | "node" {
+  if (cachedJsRuntime) return cachedJsRuntime;
+  if (JS_RUNTIME_ENV === "node" || JS_RUNTIME_ENV === "deno") {
+    cachedJsRuntime = JS_RUNTIME_ENV;
+  } else {
+    try {
+      execFileSync("deno", ["--version"], {
+        stdio: ["ignore", "ignore", "ignore"],
+        timeout: 5000,
+        shell: process.platform === "win32",
+      });
+      cachedJsRuntime = "deno";
+    } catch {
+      cachedJsRuntime = "node";
+      console.warn(
+        "[runner] deno not found on host — JS engines fall back to node (no runtime permission sandbox). Install deno or set JS_RUNTIME=node to silence."
+      );
+    }
+  }
+  console.log(`[runner] JS engine runtime: ${cachedJsRuntime}${JS_RUNTIME_ENV ? "" : " (auto)"}`);
+  return cachedJsRuntime;
+}
+
+// --no-remote: remote (https) imports can never load, even if one slipped past
+// the static gate. --quiet keeps deno's own diagnostics off the UCI streams.
+const DENO_RUN_ARGS = ["run", "--no-prompt", "--no-remote", "--quiet"];
+
+function jsSpawnSpec(scriptPath: string): { cmd: string; args: string[] } {
+  return resolveJsRuntime() === "deno"
+    ? { cmd: "deno", args: [...DENO_RUN_ARGS, scriptPath] }
+    : { cmd: "node", args: [scriptPath] };
+}
+
+// ---------------------------------------------------------------------------
 // Persistent engine controller
 //
 // The engine process is booted ONCE and kept alive for the whole game: it gets
@@ -179,11 +227,15 @@ class EngineController extends PersistentController {
   constructor(private config: AgentConfig) { super(); }
 
   protected spawnChild(): ChildProcess {
-    const runtime = this.config.language === "js" ? "node" : PYTHON_CMD;
+    const { cmd, args } =
+      this.config.language === "js"
+        ? jsSpawnSpec(this.config.path)
+        : { cmd: PYTHON_CMD, args: [this.config.path] };
     // Pass full process.env — on Windows, node.exe requires SYSTEMROOT (and other
     // vars) to initialize; stripping to just PATH caused subprocesses to exit
-    // with code 1 before producing any output.
-    return spawn(runtime, [this.config.path], {
+    // with code 1 before producing any output. (Under deno --no-prompt the
+    // engine can't read env anyway — the inherit is for runtime boot only.)
+    return spawn(cmd, args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env,
       shell: process.platform === "win32", // Windows needs shell resolution for python/py
@@ -262,12 +314,21 @@ class DockerEngineController extends PersistentController {
   }
 
   protected spawnChild(): ChildProcess {
-    // python3 inside the Linux sandbox image (not the host PYTHON_CMD).
-    const runtime = this.config.language === "js" ? "node" : "python3";
-    return spawn("docker", [
-      "exec", "-i", this.containerName,
-      runtime, this.agentPathInContainer,
-    ], { stdio: ["pipe", "pipe", "pipe"] });
+    // Runtimes inside the Linux sandbox image (not the host commands). JS runs
+    // under deno (deny-by-default permissions) unless JS_RUNTIME=node; the
+    // sandbox image ships both. DENO_DIR points at the tmpfs because the
+    // container rootfs is --read-only.
+    let execArgs: string[];
+    if (this.config.language === "js" && process.env.JS_RUNTIME !== "node") {
+      execArgs = [
+        "exec", "-i", "-e", "DENO_DIR=/tmp/.deno", this.containerName,
+        "deno", ...DENO_RUN_ARGS, this.agentPathInContainer,
+      ];
+    } else {
+      const runtime = this.config.language === "js" ? "node" : "python3";
+      execArgs = ["exec", "-i", this.containerName, runtime, this.agentPathInContainer];
+    }
+    return spawn("docker", execArgs, { stdio: ["pipe", "pipe", "pipe"] });
   }
 
   private stopContainer(): void {
