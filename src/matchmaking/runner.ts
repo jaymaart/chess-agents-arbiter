@@ -134,6 +134,11 @@ abstract class PersistentController {
   private stdoutBuf = "";
   protected stderrBuf = "";
   private pending: { resolve: (m: string) => void; reject: (e: Error) => void } | null = null;
+  /** Legacy one-shot compatibility: some agents read stdin to EOF (e.g.
+   *  readFileSync(0)) and hang forever on a persistent pipe. When set, stdin is
+   *  closed after each FEN — the engine exits after its move and the normal
+   *  respawn path boots it fresh next move. Flipped by the first-move retry. */
+  legacyEof = false;
 
   /** Spawn the engine child with piped stdio. Called on (re)boot. */
   protected abstract spawnChild(): ChildProcess;
@@ -152,17 +157,29 @@ abstract class PersistentController {
     // Writing a FEN to a one-shot engine that already exited surfaces as an async
     // EPIPE on stdin — swallow it; the close handler decides the move's fate.
     child.stdin?.on("error", () => { /* broken pipe on a dead engine */ });
-    child.stdout?.on("data", (d: Buffer) => { this.stdoutBuf += d.toString(); this.scan(); });
-    child.stderr?.on("data", (d: Buffer) => { this.stderrBuf += d.toString(); });
+    // GENERATION GUARD: every handler checks it still owns the current child.
+    // A killed child's exit/close events fire asynchronously — possibly after a
+    // retry has already booted a replacement — and must not clobber the new
+    // generation's state or reject its pending move.
+    child.stdout?.on("data", (d: Buffer) => {
+      if (this.child !== child) return;
+      this.stdoutBuf += d.toString(); this.scan();
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      if (this.child !== child) return;
+      this.stderrBuf += d.toString();
+    });
     child.on("error", (err) => {
+      if (this.child !== child) return;
       this.dead = true;
       this.child = null;
       this.rejectPending(new Error(`engine error: ${err.message}`));
     });
-    child.on("exit", () => { this.dead = true; });
+    child.on("exit", () => { if (this.child === child) this.dead = true; });
     // Settle on "close" (after stdout fully drains), not "exit": a move printed
     // immediately before exit can otherwise be missed (exit races the data).
     child.on("close", (code) => {
+      if (this.child !== child) return;
       this.dead = true;
       this.child = null;
       this.scan();
@@ -211,7 +228,7 @@ abstract class PersistentController {
           this.pending = null;
           this.dead = true;
           this.child = null;
-          try { child.kill("SIGKILL"); } catch { /* ignore */ }
+          this.onTimeoutKill(child);
           const details = this.stderrBuf.trim().slice(0, 500) || this.stdoutBuf.trim().slice(0, 500);
           reject(new Error(details ? `move timeout (${timeoutMs}ms): ${details}` : `move timeout (${timeoutMs}ms)`));
         }
@@ -222,9 +239,19 @@ abstract class PersistentController {
         reject: (e) => { clearTimeout(timer); reject(e); },
       };
 
-      try { child.stdin?.write(engineInputLine(fen, history) + "\n"); } catch { /* settled by close / timeout */ }
+      try {
+        child.stdin?.write(engineInputLine(fen, history) + "\n");
+        if (this.legacyEof) child.stdin?.end();
+      } catch { /* settled by close / timeout */ }
       this.scan(); // in case output was buffered before the request registered
     });
+  }
+
+  /** Kill the engine after a move timeout. Base: SIGKILL the child. Docker
+   *  overrides this — killing the `docker exec` client does NOT kill the
+   *  process inside the container, so it also tears the container down. */
+  protected onTimeoutKill(child: ChildProcess): void {
+    try { child.kill("SIGKILL"); } catch { /* ignore */ }
   }
 
   abstract stop(): void;
@@ -349,6 +376,14 @@ class DockerEngineController extends PersistentController {
     return spawn("docker", execArgs, { stdio: ["pipe", "pipe", "pipe"] });
   }
 
+  // A timed-out engine keeps running INSIDE the container after the exec
+  // client dies — it would burn the CPU quota alongside any retry exec. Tear
+  // the container down; the next boot's prepare() recreates it fresh.
+  protected onTimeoutKill(child: ChildProcess): void {
+    try { child.kill("SIGKILL"); } catch { /* ignore */ }
+    this.stopContainer();
+  }
+
   private stopContainer(): void {
     if (this.containerStarted) {
       try {
@@ -444,9 +479,17 @@ async function runGame(
       } catch (err: any) {
         // Failsafe: if the *first* move for this side fails, retry once with the
         // same (generous) budget. Cold-start flakiness shouldn't forfeit on move 1.
+        // The retry runs in legacy EOF mode: agents that read stdin to EOF hang
+        // on a persistent pipe, so closing stdin per move (one-shot, respawned
+        // each move) gives them a working protocol instead of a forfeit.
         if (isFirstMoveForSide) {
-          console.warn(`  First-move failure for ${side === "w" ? "white" : "black"} (${err?.message || "unknown"}) — retrying once`);
+          // A first-move TIMEOUT is the signature of an agent blocked reading
+          // stdin to EOF — demote it to per-move EOF mode. A crash is just a
+          // flake: retry on the persistent protocol.
+          const demote = /timeout/i.test(err?.message || "");
+          console.warn(`  First-move failure for ${side === "w" ? "white" : "black"} (${err?.message || "unknown"}) — retrying once${demote ? " in legacy EOF mode" : ""}`);
           try {
+            if (demote) currentController.legacyEof = true;
             move = await currentController.getMove(fen, budgetMs, uciHistory);
           } catch (retryErr: any) {
             const loserColor = chess.turn();
@@ -550,7 +593,10 @@ function buildPgn(
 ): string {
   // Sanitize free-text values embedded in quoted PGN header tags so a name or
   // termination string with a quote/backslash/newline can't break PGN structure.
-  const pgnTag = (s: string) => (s ?? "").replace(/[\\"]/g, "").replace(/[\r\n\t]+/g, " ").trim();
+  // PGN tag values: escape backslash + quote per spec (preserves the name
+  // instead of silently dropping characters), collapse control whitespace.
+  const pgnTag = (s: string | null | undefined) =>
+    (s ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n\t]+/g, " ").trim();
   const headers = [
     `[Event "Chess Agents Arena"]`,
     `[Round "${round}"]`,
