@@ -119,6 +119,11 @@ function nativeSpawnSpec(sourcePath: string, language: CompiledLanguage): { cmd:
   const c = compileEngine(sourcePath, language);
   if (!c.ok || !c.binaryPath) throw new Error(c.error || "Compilation failed.");
   if ((process.env.ENGINE_JAIL || "").toLowerCase() === "none") {
+    // Fail closed: a stray env var must never silently run untrusted native
+    // code without the seccomp boundary in a real deployment.
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("ENGINE_JAIL=none (unsandboxed native execution) is refused in production.");
+    }
     return { cmd: c.binaryPath, args: [] }; // UNSANDBOXED — dev only
   }
   return { cmd: process.env.ENGINE_JAIL || "engine-jail", args: [c.binaryPath] };

@@ -8,6 +8,7 @@ import crypto from "crypto";
 import { hashData, signData, verifyData, publicKeyFromPrivate, decryptFromServer, normalizePem } from "./crypto";
 import { runMatch } from "./matchmaking/runner";
 import { sourceExtension } from "./validation/filetype";
+import { compileEngineAsync, isCompiledLanguage } from "./validation/compile";
 import WebSocket from "ws";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -544,6 +545,18 @@ async function processJob(job: any): Promise<void> {
   try {
     await fs.writeFile(pathA, challengerCode);
     await fs.writeFile(pathB, defenderCode);
+
+    // Prewarm the compile cache off the match hot path: compiling a native
+    // engine can take seconds, and doing it inline at first-move boot would
+    // block the event loop and stall other concurrent matches' move timers.
+    // A failure here isn't fatal — the controller re-resolves and surfaces it
+    // as an engine error, scoring the game against that engine.
+    for (const side of [
+      { path: pathA, language: job.challenger.language },
+      { path: pathB, language: job.defender.language },
+    ]) {
+      if (isCompiledLanguage(side.language)) await compileEngineAsync(side.path, side.language);
+    }
 
     const result = await runMatch(
       { path: pathA, language: job.challenger.language, name: job.challenger.name },
