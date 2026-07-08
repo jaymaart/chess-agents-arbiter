@@ -7,6 +7,7 @@ import os from "os";
 import crypto from "crypto";
 import { hashData, signData, verifyData, publicKeyFromPrivate, decryptFromServer, normalizePem } from "./crypto";
 import { runMatch } from "./matchmaking/runner";
+import { sourceExtension } from "./validation/filetype";
 import WebSocket from "ws";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -533,8 +534,10 @@ async function processJob(job: any): Promise<void> {
   }
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "arbiter-match-"));
-  const challengerExt = job.challenger.language === "py" ? ".py" : jsExt(challengerCode);
-  const defenderExt = job.defender.language === "py" ? ".py" : jsExt(defenderCode);
+  // JS keeps ESM/CJS sniffing (.mjs/.cjs); py + compiled (.cpp/.c/.rs) map by
+  // language. The runner compiles from this source file for cpp/c/rust.
+  const challengerExt = job.challenger.language === "js" ? jsExt(challengerCode) : sourceExtension(job.challenger.language);
+  const defenderExt = job.defender.language === "js" ? jsExt(defenderCode) : sourceExtension(job.defender.language);
   const pathA = path.join(tempDir, `agent_a${challengerExt}`);
   const pathB = path.join(tempDir, `agent_b${defenderExt}`);
 
