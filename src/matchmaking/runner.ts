@@ -2,6 +2,8 @@ import { spawn, ChildProcess, execFileSync, spawnSync } from "child_process";
 import { readFileSync, statSync } from "fs";
 import path from "path";
 import { Chess } from "chess.js";
+import { compileEngine, isCompiledLanguage, CompiledLanguage } from "../validation/compile";
+import type { EngineLanguage } from "../validation/filetype";
 
 export interface MatchResult {
   games: GameResult[];
@@ -26,7 +28,7 @@ export interface GameResult {
 
 export interface AgentConfig {
   path: string;
-  language: "js" | "py";
+  language: EngineLanguage;
   name: string;
 }
 
@@ -101,6 +103,42 @@ function jsSpawnSpec(scriptPath: string): { cmd: string; args: string[] } {
   return resolveJsRuntime() === "deno"
     ? { cmd: "deno", args: [...DENO_RUN_ARGS, scriptPath] }
     : { cmd: "node", args: [scriptPath] };
+}
+
+// ---------------------------------------------------------------------------
+// Compiled (native) engine runtime — cpp/c/rust (Season 3+).
+//
+// Submitters upload SOURCE; we compile it to a STATICALLY linked binary (cached
+// by source hash, see compile.ts) and run that binary under the seccomp launcher
+// (sandbox/engine-jail.c). Native code can evade source analysis, so seccomp is
+// the real OS-level boundary — and it needs no privileges/namespaces, so it
+// works in the unprivileged arbiter container where docker/unshare may not.
+// ENGINE_JAIL=none runs the binary bare (local dev only).
+// ---------------------------------------------------------------------------
+function nativeSpawnSpec(sourcePath: string, language: CompiledLanguage): { cmd: string; args: string[] } {
+  const c = compileEngine(sourcePath, language);
+  if (!c.ok || !c.binaryPath) throw new Error(c.error || "Compilation failed.");
+  if ((process.env.ENGINE_JAIL || "").toLowerCase() === "none") {
+    // Fail closed: a stray env var must never silently run untrusted native
+    // code without the seccomp boundary in a real deployment.
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("ENGINE_JAIL=none (unsandboxed native execution) is refused in production.");
+    }
+    return { cmd: c.binaryPath, args: [] }; // UNSANDBOXED — dev only
+  }
+  return { cmd: process.env.ENGINE_JAIL || "engine-jail", args: [c.binaryPath] };
+}
+
+/**
+ * Command + args to boot an engine from its SOURCE path + language: interpreted
+ * → interpreter (js→deno/node, py→python); compiled → compile (cached) to a
+ * static binary run under the seccomp jail. Throws on a failed compile — boot()
+ * surfaces it as an engine error, scoring the game against this engine.
+ */
+function spawnSpecFor(language: EngineLanguage, sourcePath: string): { cmd: string; args: string[] } {
+  if (language === "js") return jsSpawnSpec(sourcePath);
+  if (language === "py") return { cmd: PYTHON_CMD, args: [sourcePath] };
+  return nativeSpawnSpec(sourcePath, language);
 }
 
 // ---------------------------------------------------------------------------
@@ -269,13 +307,17 @@ abstract class PersistentController {
 // ---------------------------------------------------------------------------
 
 class EngineController extends PersistentController {
+  // Resolved spawn command, memoized so a compiled engine is built once (via the
+  // compile cache) rather than re-hashed on every respawn.
+  private spec: { cmd: string; args: string[] } | null = null;
+
   constructor(private config: AgentConfig) { super(); }
 
   protected spawnChild(): ChildProcess {
-    const { cmd, args } =
-      this.config.language === "js"
-        ? jsSpawnSpec(this.config.path)
-        : { cmd: PYTHON_CMD, args: [this.config.path] };
+    // js→deno/node, py→python, cpp/c/rust→compile+jail. A compile failure throws
+    // here and propagates through boot()/getMove, scoring the game against it.
+    if (!this.spec) this.spec = spawnSpecFor(this.config.language, this.config.path);
+    const { cmd, args } = this.spec;
     // Pass full process.env — on Windows, node.exe requires SYSTEMROOT (and other
     // vars) to initialize; stripping to just PATH caused subprocesses to exit
     // with code 1 before producing any output. (Under deno --no-prompt the
@@ -455,10 +497,15 @@ async function runGame(
   // threefold repetition (a bare FEN has none).
   const uciHistory: string[] = [];
 
-  const makeController = (agent: AgentConfig, side: string) =>
-    DOCKER_SANDBOX
-      ? new DockerEngineController(agent, matchId || "unknown", `${side}-r${round}`)
-      : new EngineController(agent);
+  const makeController = (agent: AgentConfig, side: string) => {
+    // Compiled engines are isolated by the seccomp launcher (engine-jail), need
+    // no container, and the docker-sandbox image ships no compilers — so they
+    // always run through the bare (seccomp-jailed) controller.
+    if (DOCKER_SANDBOX && !isCompiledLanguage(agent.language)) {
+      return new DockerEngineController(agent, matchId || "unknown", `${side}-r${round}`);
+    }
+    return new EngineController(agent);
+  };
 
   const whiteController = makeController(white, "w");
   const blackController = makeController(black, "b");

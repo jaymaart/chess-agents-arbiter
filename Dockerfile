@@ -23,10 +23,22 @@ WORKDIR /app
 # denoland/deno:bin tracks latest 2.x; pin (e.g. bin-2.x.y) for reproducibility.
 COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
 
-# python3 + common chess libraries required to execute .py chess agents
-RUN apt-get update && apt-get install -y python3 python3-pip stockfish --no-install-recommends \
+# Runtime deps:
+#  - python3 + chess libraries execute .py agents; stockfish is used for analysis
+#  - g++/gcc/rustc compile .cpp/.c/.rs agents from source at match time
+#  - libseccomp-dev provides libseccomp for the engine-jail syscall sandbox
+RUN apt-get update && apt-get install -y \
+    python3 python3-pip stockfish \
+    g++ gcc rustc libseccomp-dev \
+    --no-install-recommends \
     && pip3 install chess stockfish --break-system-packages \
     && rm -rf /var/lib/apt/lists/*
+
+# Build the seccomp launcher that sandboxes compiled (native) engines: it
+# installs a syscall allowlist then execs the static engine binary — no
+# privileges/namespaces needed, so it works in unprivileged containers.
+COPY sandbox/engine-jail.c /tmp/engine-jail.c
+RUN gcc -O2 -Wall -o /usr/local/bin/engine-jail /tmp/engine-jail.c -lseccomp && rm /tmp/engine-jail.c
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
