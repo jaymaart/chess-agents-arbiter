@@ -27,9 +27,12 @@ const DRAIN_TIMEOUT_MS = Math.max(10_000, parseInt(process.env.DRAIN_TIMEOUT_MS 
 const ARBITER_ID = process.env.ARBITER_ID || `arbiter-${crypto.randomUUID().slice(0, 8)}`;
 
 // Concurrency — how many jobs to run in parallel.
-// Night scaling: bump the limit during off-peak hours (crosses midnight correctly).
+// Night scaling (off-peak hours, crosses midnight correctly) is OPT-IN: it
+// defaults to the same limit as the day, so an operator's box never silently
+// jumps to a higher count overnight. Set NIGHT_MAX_CONCURRENT explicitly to
+// raise it during off-peak hours.
 const MAX_CONCURRENT = Math.max(1, parseInt(process.env.MAX_CONCURRENT || "10", 10));
-const NIGHT_MAX_CONCURRENT = Math.max(1, parseInt(process.env.NIGHT_MAX_CONCURRENT || "20", 10));
+const NIGHT_MAX_CONCURRENT = Math.max(1, parseInt(process.env.NIGHT_MAX_CONCURRENT || String(MAX_CONCURRENT), 10));
 const NIGHT_START_HOUR = parseInt(process.env.NIGHT_START_HOUR || "22", 10);
 const NIGHT_END_HOUR = parseInt(process.env.NIGHT_END_HOUR || "8", 10);
 
