@@ -2,6 +2,13 @@
 # Image is published automatically via GitHub Actions to:
 #   ghcr.io/jaymaart/chess-agents-arbiter:latest
 
+# Pin Deno so image rebuilds don't drift onto the newest 2.x patch. Deno 2.9.2
+# shipped a runtime panic that crashed JS agents mid-match; tracking `:bin`
+# (latest) silently pulled it in. Bump DENO_VERSION once a newer release is
+# verified stable. Keep in lockstep with docker-sandbox/docker/Dockerfile.agent.
+ARG DENO_VERSION=2.8.3
+FROM denoland/deno:bin-${DENO_VERSION} AS deno
+
 FROM node:20-slim AS builder
 
 WORKDIR /app
@@ -20,8 +27,8 @@ WORKDIR /app
 
 # Deno — JS agents run under `deno run --no-prompt` (deny-by-default: no fs,
 # net, env, or subprocess access at the runtime level) since Season 3.
-# denoland/deno:bin tracks latest 2.x; pin (e.g. bin-2.x.y) for reproducibility.
-COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+# Version pinned via DENO_VERSION (see the `deno` stage at the top of this file).
+COPY --from=deno /deno /usr/local/bin/deno
 
 # Runtime deps:
 #  - python3 + chess libraries execute .py agents; stockfish is used for analysis
