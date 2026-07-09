@@ -618,7 +618,12 @@ async function processJob(job: any): Promise<void> {
         const err = await crashRes.json().catch(() => ({})) as any;
         console.error(`[Arbiter] Failed to report crash for ${job.matchId}: ${err.error || crashRes.status}`);
       }
-      matchesFailed++;
+      // An agent crashing mid-game is an ENGINE fault (the culprit is blamed
+      // above), not an arbiter fault — the arbiter ran the match and handled it
+      // cleanly. Count it as completed so it doesn't inflate the fleet failure
+      // rate, which is reserved for genuine arbiter faults (OOM, crash, a thrown
+      // runMatch — see the matchesFailed++ in fireJob's catch).
+      matchesCompleted++;
       completionTimestamps.push(Date.now());
       return;
     }
@@ -742,6 +747,12 @@ const MAX_POLL_BACKOFF_MS = 60_000;
 function fireJob(job: any): void {
   let p: Promise<void>;
   p = processJob(job).catch(err => {
+    // A throw out of processJob is a genuine ARBITER fault — the runner couldn't
+    // complete the match (OOM, docker/runtime error, unexpected exception).
+    // Engine-level problems (illegal move, timeout, agent crash) never reach
+    // here; they resolve inside processJob as game terminations. This is the
+    // only thing that should move the fleet failure rate.
+    matchesFailed++;
     console.error(`[Arbiter] Job error (${job.matchId}):`, err);
   }).finally(() => {
     activeJobs.delete(p);
