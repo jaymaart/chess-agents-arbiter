@@ -91,6 +91,7 @@ type WsStatus = "connecting" | "connected" | "disconnected";
 let wsStatus: WsStatus = "connecting";
 
 let wsLoggedStatus: string | null = null;
+let lastWsAuthError: string | null = null;
 
 function connectLiveSocket(): void {
   if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
@@ -123,7 +124,16 @@ function connectLiveSocket(): void {
           liveSocketReady = true;
           wsStatus = "connected";
           wsLoggedStatus = "connected";
+          lastWsAuthError = null;
           console.log(`${G}[Arbiter] Live WS connected.${R}`);
+        } else if (msg.type === "auth_error") {
+          // Surface WHY the live socket was rejected instead of silently
+          // reconnect-looping. Deduped so a persistent failure logs once.
+          const reason = msg.reason || "(no reason given)";
+          if (lastWsAuthError !== reason) {
+            console.warn(`${Y}[Arbiter] Live WS auth rejected: ${reason}${R}`);
+            lastWsAuthError = reason;
+          }
         }
       } catch { /* ignore */ }
     });
