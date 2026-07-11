@@ -668,18 +668,23 @@ async function processJob(job: any): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function pollRequests(count: number): Array<Record<string, unknown>> {
-  if (!MATCH_TYPES) return [{ count }];
+  // arbiterId lets the broker stamp claimed jobs with this arbiter's heartbeat
+  // identity (`broker:<arbiterId>` in broker-secret mode), so the server-side
+  // reaper can tell in-flight jobs belong to a live runner instead of
+  // fast-reaping them at 60s. The next-jobs signature only covers `count`, so
+  // the extra field is backward-compatible in both auth modes.
+  if (!MATCH_TYPES) return [{ count, arbiterId: ARBITER_ID }];
 
   if (MATCH_TYPES.includes("training")) {
     const others = MATCH_TYPES.filter(t => t !== "training");
     const reqs: Array<Record<string, unknown>> = [
-      { count, matchTypes: ["training"] },
+      { count, matchTypes: ["training"], arbiterId: ARBITER_ID },
     ];
-    if (others.length > 0) reqs.push({ count, matchTypes: others });
+    if (others.length > 0) reqs.push({ count, matchTypes: others, arbiterId: ARBITER_ID });
     return reqs;
   }
 
-  return [{ count, matchTypes: MATCH_TYPES }];
+  return [{ count, matchTypes: MATCH_TYPES, arbiterId: ARBITER_ID }];
 }
 
 let startedAt = Date.now();
