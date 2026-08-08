@@ -1,0 +1,64 @@
+{
+  "app": {
+    "name": "test",
+    "description": "Repository scan found 2 services, 0 ports, and frameworks not detected.",
+    "runtime": "docker-compose"
+  },
+  "environment": {
+    "id": "08f413f9-1086-45d2-be80-866a2de935d6",
+    "name": "Staging",
+    "type": "staging",
+    "domain": "test.staging.local",
+    "cloud": "hetzner",
+    "region": "local"
+  },
+  "services": [
+    {
+      "name": "app",
+      "type": "backend",
+      "sourcePath": ".",
+      "healthCheck": "/health"
+    },
+    {
+      "name": "docker-sandbox",
+      "type": "backend",
+      "sourcePath": "docker-sandbox",
+      "healthCheck": "/health"
+    }
+  ],
+  "network": {
+    "publicPorts": [
+      80,
+      443
+    ],
+    "publicHosts": [
+      "test.staging.local"
+    ],
+    "ssh": {
+      "enabled": false,
+      "allowedCidrs": []
+    }
+  },
+  "tls": {
+    "provider": "caddy"
+  },
+  "dns": {
+    "provider": "cloudflare"
+  },
+  "safety": {
+    "productionRequiresApproval": true,
+    "preventDatabaseDestroy": true,
+    "mockProviderOnly": true
+  },
+  "review": {
+    "warnings": [
+      "SSH ingress is disabled until an allowlist is reviewed.",
+      "No configured provider credentials were used; no real cloud APIs were called."
+    ],
+    "nextSteps": [
+      "Review the structured spec.",
+      "Generate artifacts from the approved spec.",
+      "Run a plan before requesting approval."
+    ]
+  }
+}
